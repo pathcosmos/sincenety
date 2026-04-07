@@ -1,0 +1,33 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+*.tsbuildinfo
+
+# sincenety data (local user data — never commit)
+.sincenety/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test
+coverage/
+
+# Env / secrets
+.env
+.env.*
+
+# Playwright
+.playwright-mcp/
+*.png
+
+# Temp
+/tmp/

@@ -1,0 +1,40 @@
+{
+  "name": "sincenety",
+  "version": "0.1.0",
+  "description": "Claude Code 작업 갈무리 도구 — 작업 이력 자동 분석 및 구조화된 기록 생성",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "sincenety": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/cli.ts",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": [
+    "claude-code",
+    "work-tracker",
+    "activity-log"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "commander": "^13.0.0",
+    "nodemailer": "^8.0.4",
+    "sql.js": "^1.11.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/nodemailer": "^8.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  }
+}
