@@ -143,9 +143,62 @@ sincenety schedule --status            # Check status
 sincenety schedule --uninstall         # Remove
 ```
 
-### Claude Code Skill
+### Claude Code Skill (`/sincenety`)
 
-Use `/sincenety` directly inside Claude Code sessions.
+Use `/sincenety` directly inside Claude Code sessions for AI-powered daily reports.
+
+#### Installation
+
+1. **Install the CLI** (provides the data collection engine):
+
+```bash
+npm install -g sincenety@latest
+```
+
+2. **Install the skill** (registers `/sincenety` command in Claude Code):
+
+```bash
+mkdir -p ~/.claude/skills/sincenety
+cp node_modules/sincenety/src/skill/SKILL.md ~/.claude/skills/sincenety/SKILL.md
+```
+
+Or if installed globally:
+
+```bash
+mkdir -p ~/.claude/skills/sincenety
+cp "$(npm root -g)/sincenety/src/skill/SKILL.md" ~/.claude/skills/sincenety/SKILL.md
+```
+
+3. **Update to latest version**:
+
+Inside Claude Code, run:
+```
+! npm install -g sincenety@latest
+```
+
+#### How it works
+
+When you type `/sincenety` inside Claude Code:
+
+1. **Data collection** — CLI gathers all sessions since 00:00 as JSON (with conversation turns)
+2. **AI summary** — Claude Code itself analyzes conversation turns and generates topic/outcome/flow/significance for each session, plus an overview
+3. **Save to DB** — Summary is saved to `daily_reports` table via `save-daily`
+4. **Terminal report** — Structured report shown in terminal
+5. **Email** — If configured, sends an HTML email with AI summary, color-coded dashboard, and daily overview
+
+The key insight: Claude Code **is** the AI — no external API key needed. The skill instructs the current session to summarize the collected data directly.
+
+#### Email setup (optional)
+
+Inside Claude Code or terminal:
+
+```bash
+sincenety config --email you@gmail.com
+sincenety config --smtp-user you@gmail.com
+sincenety config --smtp-pass    # Prompts for Gmail app password
+```
+
+> Generate Gmail app password: https://myaccount.google.com/apppasswords
 
 ---
 
@@ -248,6 +301,8 @@ node dist/cli.js     # Direct execution
 ## Roadmap
 
 - [x] Weekly/monthly summary reports
+- [x] Email with AI summary (daily overview + per-session topic/outcome/flow)
+- [x] Gmail clip prevention (actions capped at 5/session, text length optimized)
 - [ ] Passphrase encryption option
 - [ ] Similar task matching (TF-IDF)
 - [ ] External DB connectors (MariaDB/PostgreSQL)

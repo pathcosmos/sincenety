@@ -113,6 +113,7 @@ export interface EmailData {
   gatheredAt: number;
   totalCostUsd?: number;
   totalCacheTokens?: number;
+  dailyOverview?: string;
 }
 
 // ── 섹션 헤더 (컬러 배경 바) ──
@@ -163,7 +164,7 @@ function wrapUpCard(s: SessionData, idx: number): string {
             <div style="font-size:11px">
               <span style="color:${C.accent}">📦</span>
               <span style="color:${C.textDim};font-size:10px;font-weight:600;margin:0 6px">결과물</span>
-              <span style="color:${C.text};line-height:1.5">${esc(trunc(outcome, 150))}</span>
+              <span style="color:${C.text};line-height:1.5">${esc(trunc(outcome, 100))}</span>
             </div>
           </div>
           ${flow ? `
@@ -172,7 +173,7 @@ function wrapUpCard(s: SessionData, idx: number): string {
             <div style="font-size:11px">
               <span style="color:${C.accent}">🔄</span>
               <span style="color:${C.textDim};font-size:10px;font-weight:600;margin:0 6px">흐름</span>
-              <span style="color:${C.textMuted};line-height:1.5">${esc(trunc(flow, 200))}</span>
+              <span style="color:${C.textMuted};line-height:1.5">${esc(trunc(flow, 120))}</span>
             </div>
           </div>` : ""}
           <!-- 의미 -->
@@ -219,8 +220,8 @@ function actionRow(action: UserAction, isLast: boolean): string {
             <div style="font-size:10px;color:${C.textDim};font-family:${C.mono}">${esc(action.time)}</div>
           </td>
           <td style="vertical-align:top">
-            <div style="font-size:12px;color:${C.text};line-height:1.5">${esc(trunc(action.input, 90))}</div>
-            ${action.result ? `<div style="font-size:11px;color:${C.cyan};margin-top:2px">→ ${esc(trunc(action.result, 110))}</div>` : ""}
+            <div style="font-size:12px;color:${C.text};line-height:1.5">${esc(trunc(action.input, 60))}</div>
+            ${action.result ? `<div style="font-size:11px;color:${C.cyan};margin-top:2px">→ ${esc(trunc(action.result, 70))}</div>` : ""}
           </td>
         </tr>
       </table>
@@ -247,9 +248,13 @@ export function renderEmailHtml(data: EmailData): string {
     const bg = SESSION_BG[idx % SESSION_BG.length];
     const tokens = s.totalTokens;
 
-    const actionsHtml = s.actions.length > 0
-      ? s.actions.map((a, i) => actionRow(a, i === s.actions.length - 1)).join("")
-      : `<tr><td style="padding:6px 0;font-size:11px;color:${C.textMuted}">${esc(trunc(s.description || s.summary, 200))}</td></tr>`;
+    // Gmail 102KB 클립 방지: actions를 최대 5개로 제한
+    const maxActions = 5;
+    const trimmedActions = s.actions.length > maxActions ? s.actions.slice(0, maxActions) : s.actions;
+    const actionsHtml = trimmedActions.length > 0
+      ? trimmedActions.map((a, i) => actionRow(a, i === trimmedActions.length - 1)).join("")
+        + (s.actions.length > maxActions ? `<tr><td style="padding:4px 0;font-size:10px;color:${C.textDim};text-align:center">… 외 ${s.actions.length - maxActions}건</td></tr>` : "")
+      : `<tr><td style="padding:6px 0;font-size:11px;color:${C.textMuted}">${esc(trunc(s.description || s.summary, 100))}</td></tr>`;
 
     return `<tr><td style="padding:0 0 12px 0">
       <table width="100%" cellpadding="0" cellspacing="0" style="border-radius:10px;overflow:hidden">
@@ -268,7 +273,7 @@ export function renderEmailHtml(data: EmailData): string {
                   </td>
                 </tr>
               </table>
-              <div style="margin-top:6px;font-size:14px;color:${C.text};font-weight:600">${esc(trunc(s.title, 70))}</div>
+              <div style="margin-top:6px;font-size:14px;color:${C.text};font-weight:600">${esc(trunc(s.title, 50))}</div>
               <div style="margin-top:8px">
                 <span style="display:inline-block;background:${C.bg};border-radius:5px;padding:2px 7px;font-size:9px;color:${C.textMuted};margin-right:4px">⏱️${fmtDur(s.durationMinutes)}</span>
                 <span style="display:inline-block;background:${C.bg};border-radius:5px;padding:2px 7px;font-size:9px;color:${C.textMuted};margin-right:4px">💬${s.messageCount}</span>
@@ -307,11 +312,11 @@ export function renderEmailHtml(data: EmailData): string {
       </div>
       <!-- 핵심 주제 -->
       <div style="margin-top:6px;font-size:12px;color:${C.text};font-weight:600">
-        📌 ${esc(trunc(topic, 100))}
+        📌 ${esc(trunc(topic, 80))}
       </div>
       <!-- 작업 흐름 -->
       <div style="margin-top:4px;font-size:11px;color:${C.textMuted};line-height:1.6">
-        ${esc(trunc(flow, 200))}
+        ${esc(trunc(flow, 120))}
       </div>
     </div>`;
   }).join("");
@@ -338,6 +343,15 @@ export function renderEmailHtml(data: EmailData): string {
     </table>
     <div style="margin-top:14px;height:2px;background:linear-gradient(90deg,${C.accent},${C.accent}33,transparent)"></div>
   </td></tr>
+
+  ${data.dailyOverview ? `
+  <!-- ═══ 일일보고 Overview ═══ -->
+  <tr><td style="padding:16px 0 8px 0">
+    <div style="background:linear-gradient(135deg,#fef3c7,#fff7ed);border-radius:12px;border:1px solid #fcd34d;padding:18px 22px">
+      <div style="font-size:10px;color:#92400e;font-weight:800;letter-spacing:2px;margin-bottom:8px">📝 오늘의 요약</div>
+      <div style="font-size:13px;color:#1a1a1a;line-height:1.7">${esc(data.dailyOverview)}</div>
+    </div>
+  </td></tr>` : ""}
 
   <!-- ═══ SECTION 1: 세션 갈무리 요약 (최상단) ═══ -->
   ${sectionBar("01", "✍️", "세션 갈무리 요약", "#e0e7ff", "#3730a3")}

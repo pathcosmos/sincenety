@@ -149,9 +149,62 @@ sincenety schedule --status
 sincenety schedule --uninstall
 ```
 
-### Claude Code Skill
+### Claude Code Skill (`/sincenety`)
 
-Claude Code 안에서 `/sincenety`로 직접 호출 가능합니다. `~/.claude/skills/sincenety/SKILL.md`에 등록됩니다.
+Claude Code 안에서 `/sincenety`로 직접 호출하여 AI 기반 일일보고를 생성합니다.
+
+#### 설치
+
+1. **CLI 설치** (데이터 수집 엔진):
+
+```bash
+npm install -g sincenety@latest
+```
+
+2. **Skill 등록** (Claude Code에 `/sincenety` 명령 등록):
+
+```bash
+mkdir -p ~/.claude/skills/sincenety
+cp node_modules/sincenety/src/skill/SKILL.md ~/.claude/skills/sincenety/SKILL.md
+```
+
+또는 글로벌 설치인 경우:
+
+```bash
+mkdir -p ~/.claude/skills/sincenety
+cp "$(npm root -g)/sincenety/src/skill/SKILL.md" ~/.claude/skills/sincenety/SKILL.md
+```
+
+3. **최신 버전 업데이트**:
+
+Claude Code 안에서:
+```
+! npm install -g sincenety@latest
+```
+
+#### 동작 원리
+
+Claude Code에서 `/sincenety` 입력 시:
+
+1. **데이터 수집** — CLI가 오늘 00:00 이후 모든 세션을 JSON으로 수집 (대화 턴 포함)
+2. **AI 요약** — Claude Code 자체가 대화 턴을 분석하여 세션별 topic/outcome/flow/significance + 하루 overview 생성
+3. **DB 저장** — `save-daily`로 `daily_reports` 테이블에 저장
+4. **터미널 리포트** — 구조화된 리포트를 터미널에 표시
+5. **이메일 발송** — 설정 시 AI 요약이 반영된 HTML 이메일 발송 (일일보고 overview, 세션별 컬러코딩 대시보드)
+
+핵심: Claude Code **자체가** AI이므로 외부 API 키가 필요 없습니다. Skill이 현재 세션에게 수집된 데이터를 직접 요약하도록 지시합니다.
+
+#### 이메일 설정 (선택)
+
+Claude Code 안에서 또는 터미널에서:
+
+```bash
+sincenety config --email you@gmail.com
+sincenety config --smtp-user you@gmail.com
+sincenety config --smtp-pass    # Gmail 앱 비밀번호 입력 프롬프트
+```
+
+> Gmail 앱 비밀번호 생성: https://myaccount.google.com/apppasswords
 
 ---
 
@@ -351,9 +404,16 @@ npx .                # 현재 디렉토리를 npx로 실행
 - **DB 스키마 v3**: `daily_reports` 테이블 추가 (UNIQUE(report_date, report_type))
 - **이메일 개선**: XML/시스템 태그 정리 (cleanText, esc 함수 강화), wrapUp 데이터 반영, Section 04 작업 흐름 표시
 
+### v0.2.1 (2026-04-07) — 이메일 AI 요약 통합
+
+- **이메일에 AI 요약 반영**: `daily_reports`의 AI 요약(topic, outcome, flow, significance)을 이메일 템플릿에 매핑
+- **일일보고 overview**: 이메일 최상단에 하루 종합 요약 섹션 추가
+- **Gmail 클립 방지**: actions를 세션당 최대 5건으로 제한, 텍스트 길이 최적화 (55KB → Gmail 102KB 한도 이내)
+- **제목 개선**: "작업 갈무리" → "일일보고"로 변경
+
 ### 향후 계획
 
-- [ ] npm publish → `npx sincenety@latest` 배포
+- [x] npm publish → `npx sincenety@latest` 배포
 - [ ] passphrase 설정 기능 완성
 - [ ] 유사 작업 매칭 (TF-IDF 기반)
 - [ ] MariaDB/PostgreSQL 외부 DB 연결 (현재 비활성화)

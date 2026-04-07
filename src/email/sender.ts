@@ -49,10 +49,9 @@ export async function sendGatherEmail(
     return;
   }
 
-  // 리포트 가져오기
+  // gather_reports (raw) 가져오기
   let report;
   if (reportId != null) {
-    // getGatherReportsByDate로는 ID로 조회 불가 → 날짜 범위 없이 latest 사용 후 필터
     const latest = await storage.getLatestGatherReport();
     if (latest && latest.id === reportId) {
       report = latest;
@@ -75,22 +74,54 @@ export async function sendGatherEmail(
     return;
   }
 
-  // 제목 구성
+  // daily_reports (AI 요약)가 있으면 가져와서 wrapUp에 매핑
   const dateStr = new Date(report.gatheredAt).toISOString().slice(0, 10);
+  const dailyReport = await storage.getDailyReport(dateStr, "daily");
+  let aiSummaryMap: Map<string, { topic: string; outcome: string; flow: string; significance: string; nextSteps: string }> | null = null;
+  let dailyOverview: string | null = null;
+
+  if (dailyReport) {
+    try {
+      const summaryJson = JSON.parse(dailyReport.summaryJson || "[]");
+      aiSummaryMap = new Map();
+      for (const s of summaryJson) {
+        if (s.sessionId) {
+          aiSummaryMap.set(s.sessionId, {
+            topic: s.topic ?? "",
+            outcome: s.outcome ?? "",
+            flow: s.flow ?? "",
+            significance: s.significance ?? "",
+            nextSteps: s.nextSteps ?? "",
+          });
+        }
+      }
+      dailyOverview = dailyReport.overview;
+    } catch {
+      // AI 요약 파싱 실패 시 무시
+    }
+  }
+
+  // 제목 구성
   const totalTokensK = Math.round(
     (report.totalInputTokens + report.totalOutputTokens) / 1000,
   );
-  const subject = `[sincenety] ${dateStr} 작업 갈무리 — ${report.sessionCount}세션, ${report.totalMessages}msg, ${totalTokensK}Ktok`;
+  const subject = `[sincenety] ${dateStr} 일일보고 — ${report.sessionCount}세션, ${report.totalMessages}msg, ${totalTokensK}Ktok`;
 
-  // HTML 생성 — 리포트 JSON에서 세션 데이터 복원하여 풍부한 템플릿 렌더링
+  // HTML 생성 — AI 요약이 있으면 wrapUp에 매핑
   let html: string;
   try {
     const sessionsJson = JSON.parse(report.reportJson || "[]");
     const emailData: EmailData = {
       sessions: sessionsJson.map((s: Record<string, unknown>): SessionData => {
-        const wu = s.wrapUp as Record<string, string> | undefined;
+        const sid = (s.sessionId as string) ?? "";
+        const ai = aiSummaryMap?.get(sid);
+        const wu = ai
+          ? { outcome: ai.outcome, significance: ai.significance, flow: ai.flow, nextSteps: ai.nextSteps || undefined }
+          : (s.wrapUp as Record<string, string> | undefined)
+            ? { outcome: (s.wrapUp as any).outcome ?? "", significance: (s.wrapUp as any).significance ?? "", flow: (s.wrapUp as any).flow, nextSteps: (s.wrapUp as any).nextSteps }
+            : undefined;
         return {
-          sessionId: (s.sessionId as string) ?? "",
+          sessionId: sid,
           projectName: (s.projectName as string) ?? "",
           startedAt: (s.startedAt as number) ?? report.fromTimestamp,
           endedAt: (s.endedAt as number) ?? report.toTimestamp,
@@ -101,9 +132,9 @@ export async function sendGatherEmail(
           inputTokens: (s.inputTokens as number) ?? 0,
           outputTokens: (s.outputTokens as number) ?? 0,
           totalTokens: (s.totalTokens as number) ?? 0,
-          title: (s.title as string) ?? "",
-          summary: (s.title as string) ?? "",
-          description: (s.description as string) ?? "",
+          title: ai?.topic || ((s.title as string) ?? ""),
+          summary: ai?.topic || ((s.title as string) ?? ""),
+          description: ai?.outcome || ((s.description as string) ?? ""),
           model: (s.model as string) ?? "",
           category: (s.category as string) ?? "",
           actions: ((s.actions as unknown[]) ?? []).map((a: any) => ({
@@ -112,22 +143,24 @@ export async function sendGatherEmail(
             result: a.result ?? "",
             significance: a.significance ?? "",
           })),
-          wrapUp: wu ? {
-            outcome: wu.outcome ?? "",
-            significance: wu.significance ?? "",
-            flow: wu.flow,
-            nextSteps: wu.nextSteps,
-          } : undefined,
+          wrapUp: wu,
         };
       }),
       fromTimestamp: report.fromTimestamp,
       toTimestamp: report.toTimestamp,
       gatheredAt: report.gatheredAt,
+      dailyOverview: dailyOverview ?? undefined,
     };
     html = renderEmailHtml(emailData);
   } catch {
     // JSON 파싱 실패 시 마크다운을 plain text로
     html = `<pre style="font-family:monospace;white-space:pre-wrap">${report.reportMarkdown.replace(/</g, "&lt;")}</pre>`;
+  }
+
+  // plain text 본문도 AI 요약 기반으로 구성
+  let plainText = report.reportMarkdown;
+  if (dailyOverview) {
+    plainText = `[일일보고] ${dateStr}\n\n${dailyOverview}\n\n${plainText}`;
   }
 
   // 전송
@@ -145,12 +178,15 @@ export async function sendGatherEmail(
     from: config.smtpUser,
     to: config.email,
     subject,
-    text: report.reportMarkdown,
+    text: plainText,
     html,
   });
 
-  // 발송 기록 업데이트
+  // 발송 기록 업데이트 (gather_reports + daily_reports 모두)
   await storage.updateReportEmail(report.id!, Date.now(), config.email);
+  if (dailyReport?.id) {
+    await storage.updateDailyReportEmail(dailyReport.id, Date.now(), config.email);
+  }
 
   console.log(`  이메일 발송 완료: ${config.email}`);
   console.log(`  제목: ${subject}`);
