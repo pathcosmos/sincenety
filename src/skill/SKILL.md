@@ -16,14 +16,14 @@ description: Use when the user wants to log, review, or summarize their Claude C
 
 ```bash
 # 기본 갈무리 (마지막 포인트 이후)
-node /Volumes/minim42tbtmm/temp_git/sincenety/dist/cli.js
+npx sincenety
 
 # 특정 시점부터
-node /Volumes/minim42tbtmm/temp_git/sincenety/dist/cli.js --since "09:00"
+npx sincenety --since "09:00"
 
 # 로그 조회
-node /Volumes/minim42tbtmm/temp_git/sincenety/dist/cli.js log
-node /Volumes/minim42tbtmm/temp_git/sincenety/dist/cli.js log --week
+npx sincenety log
+npx sincenety log --week
 ```
 
 ## How It Works

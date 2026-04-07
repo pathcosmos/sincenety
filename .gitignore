@@ -24,6 +24,10 @@ coverage/
 # Env / secrets
 .env
 .env.*
+.npmrc
+
+# Claude Code local settings (토큰/경로 포함 가능)
+.claude/
 
 # Playwright
 .playwright-mcp/

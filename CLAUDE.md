@@ -30,7 +30,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   "display": "사용자 입력 메시지 텍스트",
   "pastedContents": {},
   "timestamp": 1775548110649,
-  "project": "/Volumes/minim42tbtmm/temp_git/sincenety",
+  "project": "/path/to/your/project",
   "sessionId": "9e223a29-64e9-4540-8c9a-fef279943239"
 }
 ```
@@ -41,7 +41,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 {
   "pid": 19361,
   "sessionId": "9e223a29-...",
-  "cwd": "/Volumes/minim42tbtmm/temp_git/sincenety",
+  "cwd": "/path/to/your/project",
   "startedAt": 1775548110649,
   "kind": "interactive",
   "entrypoint": "cli"
