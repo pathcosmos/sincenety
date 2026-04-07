@@ -1,11 +1,11 @@
 {
   "name": "sincenety",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Claude Code 작업 갈무리 도구 — 작업 이력 자동 분석 및 구조화된 기록 생성",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
-    "sincenety": "./dist/cli.js"
+    "sincenety": "dist/cli.js"
   },
   "scripts": {
     "build": "tsc",
@@ -25,6 +25,15 @@
     "activity-log"
   ],
   "license": "MIT",
+  "author": "pathcosmos",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pathcosmos/sincenety.git"
+  },
+  "homepage": "https://github.com/pathcosmos/sincenety#readme",
+  "bugs": {
+    "url": "https://github.com/pathcosmos/sincenety/issues"
+  },
   "dependencies": {
     "commander": "^13.0.0",
     "nodemailer": "^8.0.4",
