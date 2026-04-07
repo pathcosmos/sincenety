@@ -52,12 +52,41 @@ function sessionGroupToRecord(group: SessionGroup): SessionRecord {
   };
 }
 
-function buildGatherReport(
+/** XML/HTML 태그, 시스템 메시지 등을 정리하여 사람이 읽을 수 있는 텍스트로 변환 */
+function stripTags(text: string): string {
+  return text
+    .replace(/<[^>]*>/g, "")                       // XML/HTML 태그
+    .replace(/Caveat:.*?(?=\n|$)/gi, "")           // Caveat 시스템 메시지
+    .replace(/Base directory for this skill:.*?(?=\n|$)/gi, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/** userInputs에서 의미 있는 작업 목록 추출 (짧은 응답/커맨드 필터) */
+function extractMeaningfulActions(
+  inputs: Array<{ timestamp: number; text: string }>,
+): Array<{ time: string; input: string }> {
+  return inputs
+    .map((ui) => {
+      const cleaned = stripTags(ui.text);
+      return {
+        time: ui.timestamp > 0
+          ? new Date(ui.timestamp).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" })
+          : "",
+        input: cleaned.length > 200 ? cleaned.slice(0, 199) + "…" : cleaned,
+        raw: cleaned,
+      };
+    })
+    .filter((a) => a.raw.length > 3);  // 빈 문자열/매우 짧은 응답 제거
+}
+
+async function buildGatherReport(
   sessions: SessionGroup[],
   fromTimestamp: number,
   toTimestamp: number,
   markdownReport: string,
-): GatherReport {
+  storage: StorageAdapter,
+): Promise<GatherReport> {
   const totalMessages = sessions.reduce((s, g) => s + g.messageCount, 0);
   const totalInputTokens = sessions.reduce(
     (s, g) => s + (g.inputTokens ?? 0), 0
@@ -65,6 +94,10 @@ function buildGatherReport(
   const totalOutputTokens = sessions.reduce(
     (s, g) => s + (g.outputTokens ?? 0), 0
   );
+
+  // 세션별 AI/헬리스틱 요약 생성
+  const { summarizeSessions } = await import("./summarizer.js");
+  const summaries = await summarizeSessions(sessions, storage);
 
   return {
     gatheredAt: toTimestamp,
@@ -76,22 +109,43 @@ function buildGatherReport(
     totalOutputTokens,
     reportMarkdown: markdownReport,
     reportJson: JSON.stringify(
-      sessions.map((s) => ({
-        sessionId: s.sessionId,
-        projectName: s.projectName,
-        title: s.title ?? s.summary,
-        startedAt: s.startedAt,
-        endedAt: s.endedAt,
-        durationMinutes: s.durationMinutes ?? (s.endedAt - s.startedAt) / 60000,
-        messageCount: s.messageCount,
-        userMessageCount: s.userMessageCount ?? 0,
-        assistantMessageCount: s.assistantMessageCount ?? 0,
-        inputTokens: s.inputTokens ?? 0,
-        outputTokens: s.outputTokens ?? 0,
-        totalTokens: (s.inputTokens ?? 0) + (s.outputTokens ?? 0),
-        model: s.model ?? "",
-        category: s.category ?? s.projectName,
-      }))
+      sessions.map((s) => {
+        const inputs = s.userInputs ?? [];
+        const actions = extractMeaningfulActions(inputs).map((a) => ({
+          time: a.time,
+          input: a.input,
+          result: "",
+          significance: "",
+        }));
+
+        const summary = summaries.get(s.sessionId);
+        const cleanTitle = summary?.topic || stripTags(s.title ?? s.summary);
+        const cleanDesc = stripTags(s.description ?? "");
+
+        return {
+          sessionId: s.sessionId,
+          projectName: s.projectName,
+          title: cleanTitle,
+          startedAt: s.startedAt,
+          endedAt: s.endedAt,
+          durationMinutes: s.durationMinutes ?? (s.endedAt - s.startedAt) / 60000,
+          messageCount: s.messageCount,
+          userMessageCount: s.userMessageCount ?? 0,
+          assistantMessageCount: s.assistantMessageCount ?? 0,
+          inputTokens: s.inputTokens ?? 0,
+          outputTokens: s.outputTokens ?? 0,
+          totalTokens: (s.inputTokens ?? 0) + (s.outputTokens ?? 0),
+          model: s.model ?? "",
+          category: s.category ?? s.projectName,
+          description: cleanDesc,
+          actions,
+          wrapUp: summary ? {
+            outcome: summary.outcome,
+            significance: summary.significance,
+            flow: summary.flow,
+          } : undefined,
+        };
+      })
     ),
     emailedAt: null,
     emailTo: null,
@@ -112,13 +166,13 @@ export async function gather(
   if (options.sinceTimestamp != null) {
     fromTimestamp = options.sinceTimestamp;
   } else {
+    // 항상 오늘 00:00부터 — 하루 전체 작업을 매번 수집 (upsert로 중복 방지)
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    fromTimestamp = today.getTime();
+
     const lastCheckpoint = await storage.getLastCheckpoint();
-    if (lastCheckpoint != null) {
-      fromTimestamp = lastCheckpoint;
-    } else {
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-      fromTimestamp = today.getTime();
+    if (lastCheckpoint == null) {
       isFirstRun = true;
     }
   }
@@ -157,7 +211,7 @@ export async function gather(
       "../report/markdown.js"
     );
     const markdown = generateMarkdownReport(sessions, fromTimestamp, now);
-    const report = buildGatherReport(sessions, fromTimestamp, now, markdown);
+    const report = await buildGatherReport(sessions, fromTimestamp, now, markdown, storage);
     reportId = await storage.saveGatherReport(report);
 
     await storage.saveCheckpoint(now);

@@ -29,6 +29,10 @@ export interface SessionGroup {
   tags?: string[];
   model?: string;
   messages: string[];
+  /** 사용자 입력 전체 목록 (타임스탬프 포함, session-jsonl에서 제공) */
+  userInputs?: Array<{ timestamp: number; text: string }>;
+  /** 대화 턴 (사용자→어시스턴트 쌍) — 실제 작업 내용 파악용 */
+  conversationTurns?: Array<{ userInput: string; assistantOutput: string; timestamp: number }>;
 }
 
 function extractProjectName(project: string): string {

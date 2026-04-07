@@ -2,20 +2,27 @@
 
 > **[English Documentation (README.md)](./README.md)**
 
-**Claude Code 작업 갈무리 도구** — `sincenety` 한 번 실행으로 마지막 갈무리 이후의 모든 Claude Code 작업을 자동 분석하여 구조화된 기록을 생성합니다.
+**Claude Code 작업 갈무리 도구** — `sincenety` 한 번 실행으로 오늘 하루의 모든 Claude Code 작업을 자동 분석하여 구조화된 기록을 생성합니다.
 
-start/stop 없이, 실행 시점 기준으로 소급하여 모든 작업을 정리합니다.
+start/stop 없이, 오늘 00:00부터 현재까지의 모든 작업을 소급 정리합니다 (upsert로 중복 방지).
 
 ```
 $ sincenety
 
-  📋 2026년 4월 7일 화요일 작업 갈무리 (12:00 ~ 18:05)
-  총 4개 세션, 1605개 메시지 | 토큰: 9.0Kin / 212.7Kout
-  ────────────────────────────────────────────────────────
-  [claudflare_web] 11:22 ~ 14:49 (3시간 28분, 445msg, 66.4Ktok)
-    pathcosmos.com 보안 강화 + 웹 분석 구축
-    모델: claude-opus-4-6
-  ...
+  📋 2026년 4월 7일 화요일 작업 갈무리 (00:00 ~ 18:05)
+
+  ┌─────────────────────────────────────────────────┐
+  │ 총 세션: 4개 │ 메시지: 1,605개 │ 토큰: 221.7K │
+  └─────────────────────────────────────────────────┘
+
+  ┌──────────────┬───────────────┬────────┬─────────┬───────────────────────────────┐
+  │ 프로젝트     │ 시간          │ 메시지 │ 토큰    │ 작업 내용                     │
+  ├──────────────┼───────────────┼────────┼─────────┼───────────────────────────────┤
+  │ claudflare   │ 11:22 ~ 14:49│ 445    │ 66.4K   │ 보안 강화 + 웹 분석 구축      │
+  │ sincenety    │ 15:01 ~ 18:05│ 312    │ 48.2K   │ AI 요약 일일보고 시스템       │
+  │ ...          │               │        │         │                               │
+  └──────────────┴───────────────┴────────┴─────────┴───────────────────────────────┘
+
   ✅ 갈무리 완료. 기록이 저장되었습니다.
 ```
 
@@ -25,9 +32,10 @@ $ sincenety
 
 ### 소급 갈무리
 
-별도 기록 행위 없이, `sincenety` 실행 시 마지막 갈무리 시점 이후의 `~/.claude/` 데이터를 분석하여 프로젝트별/세션별 작업 내용을 자동 재구성합니다.
+별도 기록 행위 없이, `sincenety` 실행 시 오늘 00:00부터 현재까지의 `~/.claude/` 데이터를 분석하여 프로젝트별/세션별 작업 내용을 자동 재구성합니다. 하루 전체를 수집하되 upsert로 중복을 방지합니다.
 
-- **세션 JSONL 파싱** — `~/.claude/projects/[project]/[sessionId].jsonl`에서 토큰 사용량, 모델명, 정밀 타임스탬프 추출
+- **대화 턴 분석** — 사용자 입력 + 어시스턴트 응답 쌍(`conversationTurns`)을 함께 수집하여 정밀한 작업 내용 파악
+- **세션 JSONL 파싱** — `~/.claude/projects/[project]/[sessionId].jsonl`에서 토큰 사용량, 모델명, 정밀 타임스탬프, 대화 턴 추출
 - **history.jsonl 보조 인덱스** — 빠른 세션 목록 조회용
 - **갈무리 포인트** — 매 실행 시 "여기까지 정리했음" 마커를 저장하여 중복 없이 이어서 정리
 
@@ -42,9 +50,16 @@ $ sincenety
 | 사용 모델 | assistant 응답에서 모델명 추출 |
 | 카테고리 | 프로젝트 경로 기반 자동 분류 |
 
+### AI 요약 일일보고
+
+Claude Code 세션 자체를 요약 엔진으로 활용합니다. `--json` 플래그로 대화 턴 포함 구조화 JSON을 출력하면, SKILL.md가 Claude Code에게 직접 요약 생성을 지시합니다. 외부 API 키 없이도 동작하며, `ANTHROPIC_API_KEY`가 있으면 Claude API 요약도 가능합니다.
+
+- **`save-daily`** — AI가 생성한 일일보고를 DB에 저장
+- **`report`** — 일일/주간/월간 보고 조회 (주간/월간은 일일보고를 종합)
+
 ### 이메일 리포트
 
-Gmail SMTP를 통해 갈무리 리포트를 이메일로 발송합니다. 세션별 컬러 코딩, 토큰 대시보드, 갈무리 요약이 포함된 HTML 이메일입니다.
+Gmail SMTP를 통해 갈무리 리포트를 이메일로 발송합니다. 세션별 컬러 코딩, 토큰 대시보드, 갈무리 요약이 포함된 HTML 이메일입니다. wrapUp 데이터(outcome, flow, significance)를 반영하며, XML/시스템 태그가 정리된 깔끔한 이메일을 생성합니다.
 
 ### 자동 스케줄링
 
@@ -75,12 +90,15 @@ npm link   # 글로벌 등록
 ### 기본 사용
 
 ```bash
-# 갈무리 (마지막 포인트 이후)
+# 갈무리 (오늘 00:00부터 현재까지)
 sincenety
 
 # 특정 시점부터 갈무리
 sincenety --since "09:00"
 sincenety --since "2026-04-07 09:00"
+
+# 구조화 JSON 출력 (대화 턴 포함, AI 요약 파이프라인용)
+sincenety --json
 
 # 빠른 모드 (토큰 추출 없이 history.jsonl만 사용)
 sincenety --no-detail
@@ -89,6 +107,15 @@ sincenety --no-detail
 sincenety log
 sincenety log --date 2026-04-06
 sincenety log --week
+
+# AI 요약 일일보고 저장 (stdin으로 JSON 입력)
+sincenety save-daily < daily_report.json
+
+# 보고 조회
+sincenety report                    # 오늘 일일보고
+sincenety report --week             # 주간 보고
+sincenety report --month            # 월간 보고
+sincenety report --date 2026-04-06  # 특정일 보고
 ```
 
 ### 이메일 설정
@@ -133,12 +160,13 @@ Claude Code 안에서 `/sincenety`로 직접 호출 가능합니다. `~/.claude/
 ```
 sincenety/
 ├── src/
-│   ├── cli.ts                  # CLI 진입점 (commander, 5개 서브커맨드)
+│   ├── cli.ts                  # CLI 진입점 (commander, 7개 서브커맨드)
 │   ├── core/
-│   │   └── gatherer.ts         # 갈무리 핵심 로직 (파싱→그룹핑→저장→리포트)
+│   │   ├── gatherer.ts         # 갈무리 핵심 로직 (파싱→그룹핑→저장→리포트)
+│   │   └── summarizer.ts      # AI 요약 (Claude API + 휴리스틱 fallback)
 │   ├── parser/
 │   │   ├── history.ts          # ~/.claude/history.jsonl 스트리밍 파서
-│   │   └── session-jsonl.ts    # 세션 JSONL 파서 (토큰/모델/타이밍 추출)
+│   │   └── session-jsonl.ts    # 세션 JSONL 파서 (토큰/모델/타이밍/대화턴 추출)
 │   ├── grouper/
 │   │   └── session.ts          # sessionId+project 기준 그룹핑
 │   ├── storage/
@@ -148,7 +176,7 @@ sincenety/
 │   │   ├── key.ts              # PBKDF2 키 파생 (머신 바운드 + passphrase)
 │   │   └── crypto.ts           # AES-256-GCM encrypt/decrypt
 │   ├── report/
-│   │   ├── terminal.ts         # 터미널 출력 포매터
+│   │   ├── terminal.ts         # 터미널 테이블 출력 (유니코드 박스 드로잉, 한글 폭 계산)
 │   │   └── markdown.ts         # 마크다운 리포트 생성
 │   ├── email/
 │   │   ├── sender.ts           # nodemailer 이메일 발송
@@ -171,24 +199,33 @@ sincenety/
 ~/.claude/history.jsonl  ──→  세션 목록 추출 (sessionId + project)
                                     │
                                     ▼
-~/.claude/projects/[project]/[sessionId].jsonl  ──→  토큰/모델/타이밍 추출
+~/.claude/projects/[project]/[sessionId].jsonl  ──→  토큰/모델/타이밍/대화턴 추출
                                     │
                                     ▼
                              그룹핑 + 요약 생성
                                     │
-                     ┌──────────────┼──────────────┐
-                     ▼              ▼              ▼
-              터미널 출력     DB 저장 (암호화)    이메일 발송
+                     ┌──────────┬───┼───────┬──────────────┐
+                     ▼          ▼   ▼       ▼              ▼
+              터미널 출력  --json  DB 저장  이메일 발송  Claude Code
+              (테이블)    (구조화) (암호화)              AI 요약
+                                                          │
+                                                          ▼
+                                                   save-daily
+                                                   (일일보고 DB 저장)
+                                                          │
+                                                          ▼
+                                                   report (일일/주간/월간)
 ```
 
 ### DB 스키마
 
-**4개 테이블:**
+**5개 테이블:**
 
 | 테이블 | 설명 |
 |--------|------|
 | `sessions` | 세션별 작업 기록 (22개 컬럼 — 토큰, 시간, 타이틀, 설명, 모델 등) |
 | `gather_reports` | 갈무리 실행마다 리포트 저장 (마크다운 + JSON) |
+| `daily_reports` | AI 요약 일일/주간/월간 보고 (UNIQUE(report_date, report_type)) |
 | `checkpoints` | 갈무리 포인트 (마지막 처리 timestamp) |
 | `config` | 설정 (이메일, SMTP 등) |
 
@@ -303,13 +340,24 @@ npx .                # 현재 디렉토리를 npx로 실행
 - **자동 스케줄링**: launchd (macOS) / crontab (Linux) 자동 설치
 - **`--auto` 플래그**: 갈무리 + 이메일 자동 발송 (스케줄러용)
 
+### v0.3 (2026-04-07) — AI 요약 일일보고 + 주간/월간 보고
+
+- **기본 갈무리 범위 변경**: 항상 오늘 00:00부터 (upsert로 중복 방지)
+- **대화 턴 수집**: `session-jsonl.ts`에서 사용자 입력 + 어시스턴트 응답 쌍(`conversationTurns`) 추출
+- **터미널 테이블 출력**: 요약 테이블 + 세션 상세 테이블 (유니코드 박스 드로잉, 한글 fullwidth 폭 계산)
+- **AI 요약 아키텍처**: `--json` 플래그로 대화 턴 포함 구조화 JSON 출력, SKILL.md가 Claude Code에게 직접 요약 지시
+- **summarizer.ts**: Claude API 요약 (`ANTHROPIC_API_KEY` 있을 때) + 휴리스틱 fallback
+- **일일보고 시스템**: `save-daily` (stdin JSON → DB 저장), `report` (일일/주간/월간 조회)
+- **DB 스키마 v3**: `daily_reports` 테이블 추가 (UNIQUE(report_date, report_type))
+- **이메일 개선**: XML/시스템 태그 정리 (cleanText, esc 함수 강화), wrapUp 데이터 반영, Section 04 작업 흐름 표시
+
 ### 향후 계획
 
 - [ ] npm publish → `npx sincenety@latest` 배포
 - [ ] passphrase 설정 기능 완성
 - [ ] 유사 작업 매칭 (TF-IDF 기반)
 - [ ] MariaDB/PostgreSQL 외부 DB 연결 (현재 비활성화)
-- [ ] 주간/월간 요약 리포트
+- [x] 주간/월간 요약 리포트
 - [ ] ccusage 연동 (토큰 비용 자동 계산)
 
 ---
@@ -321,8 +369,8 @@ npx .                # 현재 디렉토리를 npx로 실행
 | TypeScript 소스 파일 | 15개 |
 | 총 코드 라인 | 3,013줄 |
 | 암호화 테스트 | 26/26 통과 |
-| CLI 명령어 | 5개 (갈무리, log, config, email, schedule) |
-| DB 테이블 | 4개 |
+| CLI 명령어 | 7개 (갈무리, log, config, email, schedule, save-daily, report) |
+| DB 테이블 | 5개 |
 | 의존성 (production) | 3개 (commander, nodemailer, sql.js) |
 | 보안 이슈 발견/수정 | 8/8 |
 

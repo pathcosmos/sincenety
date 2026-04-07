@@ -8,6 +8,7 @@ import { deriveMachineKey } from "../encryption/key.js";
 import type {
   SessionRecord,
   GatherReport,
+  DailyReport,
   StorageAdapter,
 } from "./adapter.js";
 
@@ -69,6 +70,28 @@ CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at);
 CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project);
 CREATE INDEX IF NOT EXISTS idx_sessions_category ON sessions(category);
 CREATE INDEX IF NOT EXISTS idx_reports_gathered ON gather_reports(gathered_at);
+`;
+
+const SCHEMA_V3 = `
+CREATE TABLE IF NOT EXISTS daily_reports (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  report_date TEXT NOT NULL,
+  report_type TEXT NOT NULL DEFAULT 'daily',
+  period_from INTEGER NOT NULL,
+  period_to INTEGER NOT NULL,
+  session_count INTEGER DEFAULT 0,
+  total_messages INTEGER DEFAULT 0,
+  total_tokens INTEGER DEFAULT 0,
+  summary_json TEXT NOT NULL,
+  overview TEXT,
+  report_markdown TEXT,
+  created_at INTEGER NOT NULL,
+  emailed_at INTEGER,
+  email_to TEXT,
+  UNIQUE(report_date, report_type)
+);
+CREATE INDEX IF NOT EXISTS idx_daily_date ON daily_reports(report_date);
+CREATE INDEX IF NOT EXISTS idx_daily_type ON daily_reports(report_type);
 `;
 
 // v0.1 → v0.2 마이그레이션: 새 컬럼 추가
@@ -172,9 +195,19 @@ export class SqlJsAdapter implements StorageAdapter {
          VALUES ('schema_version', '2', ?)`,
         [Date.now()]
       );
+    }
+
+    // v3: daily_reports 테이블 추가
+    if (version < 3) {
+      this.db!.run(SCHEMA_V3);
+      this.db!.run(
+        `INSERT OR REPLACE INTO config (key, value, updated_at)
+         VALUES ('schema_version', '3', ?)`,
+        [Date.now()]
+      );
     } else {
-      // 이미 v2 — 안전하게 CREATE IF NOT EXISTS 실행
-      this.db!.run(SCHEMA_V2);
+      // 이미 v3 — 안전하게 CREATE IF NOT EXISTS 실행
+      this.db!.run(SCHEMA_V3);
     }
   }
 
@@ -432,6 +465,106 @@ export class SqlJsAdapter implements StorageAdapter {
     this.db!.run(
       "INSERT INTO checkpoints (timestamp, created_at) VALUES (?, ?)",
       [timestamp, Date.now()]
+    );
+    await this.save();
+  }
+
+  // ── 일일/주간/월간 보고 ──
+
+  private rowToDailyReport(row: Record<string, unknown>): DailyReport {
+    return {
+      id: row.id as number,
+      reportDate: row.report_date as string,
+      reportType: row.report_type as DailyReport["reportType"],
+      periodFrom: row.period_from as number,
+      periodTo: row.period_to as number,
+      sessionCount: (row.session_count as number) ?? 0,
+      totalMessages: (row.total_messages as number) ?? 0,
+      totalTokens: (row.total_tokens as number) ?? 0,
+      summaryJson: (row.summary_json as string) ?? "[]",
+      overview: (row.overview as string) ?? null,
+      reportMarkdown: (row.report_markdown as string) ?? null,
+      createdAt: row.created_at as number,
+      emailedAt: (row.emailed_at as number) ?? null,
+      emailTo: (row.email_to as string) ?? null,
+    };
+  }
+
+  async saveDailyReport(report: DailyReport): Promise<number> {
+    this.ensureDb();
+    this.db!.run(
+      `INSERT OR REPLACE INTO daily_reports
+       (report_date, report_type, period_from, period_to,
+        session_count, total_messages, total_tokens,
+        summary_json, overview, report_markdown, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        report.reportDate, report.reportType,
+        report.periodFrom, report.periodTo,
+        report.sessionCount, report.totalMessages, report.totalTokens,
+        report.summaryJson, report.overview, report.reportMarkdown,
+        report.createdAt,
+      ]
+    );
+    const idStmt = this.db!.prepare("SELECT last_insert_rowid() as id");
+    idStmt.step();
+    const id = (idStmt.getAsObject() as Record<string, unknown>).id as number;
+    idStmt.free();
+    await this.save();
+    return id;
+  }
+
+  async getDailyReport(date: string, type = "daily"): Promise<DailyReport | null> {
+    this.ensureDb();
+    const stmt = this.db!.prepare(
+      "SELECT * FROM daily_reports WHERE report_date = ? AND report_type = ? LIMIT 1"
+    );
+    stmt.bind([date, type]);
+    if (stmt.step()) {
+      const row = stmt.getAsObject() as Record<string, unknown>;
+      stmt.free();
+      return this.rowToDailyReport(row);
+    }
+    stmt.free();
+    return null;
+  }
+
+  async getDailyReportsByRange(from: string, to: string, type = "daily"): Promise<DailyReport[]> {
+    this.ensureDb();
+    const stmt = this.db!.prepare(
+      `SELECT * FROM daily_reports
+       WHERE report_date >= ? AND report_date <= ? AND report_type = ?
+       ORDER BY report_date ASC`
+    );
+    stmt.bind([from, to, type]);
+    const results: DailyReport[] = [];
+    while (stmt.step()) {
+      results.push(this.rowToDailyReport(stmt.getAsObject() as Record<string, unknown>));
+    }
+    stmt.free();
+    return results;
+  }
+
+  async getLatestDailyReport(type = "daily"): Promise<DailyReport | null> {
+    this.ensureDb();
+    const stmt = this.db!.prepare(
+      "SELECT * FROM daily_reports WHERE report_type = ? ORDER BY report_date DESC LIMIT 1"
+    );
+    stmt.bind([type]);
+    if (stmt.step()) {
+      const row = stmt.getAsObject() as Record<string, unknown>;
+      stmt.free();
+      return this.rowToDailyReport(row);
+    }
+    stmt.free();
+    return null;
+  }
+
+  async updateDailyReportEmail(reportId: number, emailedAt: number, emailTo: string): Promise<void> {
+    this.ensureDb();
+    this.db!.run(
+      "UPDATE daily_reports SET emailed_at = ?, email_to = ? WHERE id = ?",
+      [emailedAt, emailTo, reportId]
     );
     await this.save();
   }

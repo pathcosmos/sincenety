@@ -9,13 +9,17 @@ No start/stop needed. Just run it when you're done.
 ```
 $ sincenety
 
-  📋 2026-04-07 (Tue) Work Gather (12:00 ~ 18:05)
-  4 sessions, 1605 messages | Tokens: 9.0Kin / 212.7Kout
-  ────────────────────────────────────────────────────────
-  [claudflare_web] 11:22 ~ 14:49 (3h 28m, 445msg, 66.4Ktok)
-    pathcosmos.com security + web analytics setup
-    Model: claude-opus-4-6
-  ...
+  📋 2026-04-07 (Mon) Work Gather (00:00 ~ 18:05)
+  ┌─────────────────────────────────────────────────────────┐
+  │ Sessions: 4 │ Messages: 1605 │ Tokens: 9.0Ki / 212.7Ko │
+  └─────────────────────────────────────────────────────────┘
+  ┌──────────────┬───────────────┬────────┬────────┬────────┐
+  │ Project      │ Time          │ Msgs   │ Tokens │ Model  │
+  ├──────────────┼───────────────┼────────┼────────┼────────┤
+  │ claudflare   │ 11:22 ~ 14:49 │    445 │ 66.4K  │ opus   │
+  │ sincenety    │ 14:55 ~ 18:05 │    860 │ 98.2K  │ opus   │
+  │ ...          │               │        │        │        │
+  └──────────────┴───────────────┴────────┴────────┴────────┘
   ✅ Gather complete. Records saved.
 ```
 
@@ -27,8 +31,8 @@ $ sincenety
 
 No need to remember to start/stop tracking. `sincenety` parses `~/.claude/` data at runtime and reconstructs everything:
 
-- **Session JSONL parsing** — Extracts token usage, model names, and millisecond-precision timestamps from `~/.claude/projects/[project]/[sessionId].jsonl`
-- **Checkpoint system** — Each run saves a "gathered up to here" marker, so the next run picks up where you left off
+- **Session JSONL parsing** — Extracts token usage, model names, millisecond-precision timestamps, and conversation turns (user input + assistant output pairs) from `~/.claude/projects/[project]/[sessionId].jsonl`
+- **Full-day default** — Always gathers from today 00:00 by default; upsert logic prevents duplicates across runs
 
 ### Rich Work Records
 
@@ -41,9 +45,15 @@ No need to remember to start/stop tracking. `sincenety` parses `~/.claude/` data
 | Model | Extracted from assistant responses |
 | Category | Auto-classified from project path |
 
+### AI-Powered Daily Reports
+
+Generate summaries powered by Claude Code itself — no external API key needed. The CLI outputs structured JSON with conversation turns, and the Claude Code skill (SKILL.md) instructs the session to generate summaries directly. Summaries are saved to the `daily_reports` table and can be viewed as daily, weekly, or monthly reports.
+
+When `ANTHROPIC_API_KEY` is set, the `summarizer.ts` module can also call the Claude API directly for turn-based analysis with heuristic fallback.
+
 ### Email Reports
 
-Send beautiful HTML email reports via Gmail SMTP. Color-coded sessions, token dashboard, and session summaries included.
+Send beautiful HTML email reports via Gmail SMTP. Color-coded sessions, token dashboard, work flow, and outcome/significance data included. XML/system tag cleanup ensures clean output.
 
 ### Auto-Scheduling
 
@@ -76,12 +86,15 @@ npm link
 ### Basic Gathering
 
 ```bash
-# Gather since last checkpoint
+# Gather today's work (default: from 00:00, upsert prevents duplicates)
 sincenety
 
 # Gather from specific time
 sincenety --since "09:00"
 sincenety --since "2026-04-07 09:00"
+
+# JSON output with conversation turns (for AI summary pipeline)
+sincenety --json
 
 # Fast mode (history.jsonl only, no token extraction)
 sincenety --no-detail
@@ -90,6 +103,19 @@ sincenety --no-detail
 sincenety log
 sincenety log --date 2026-04-06
 sincenety log --week
+```
+
+### Daily Reports
+
+```bash
+# Save an AI-generated summary to the DB (accepts JSON from stdin)
+sincenety save-daily < summary.json
+
+# View daily/weekly/monthly reports
+sincenety report                   # Today's report
+sincenety report --date 2026-04-06
+sincenety report --week            # Weekly aggregate
+sincenety report --month           # Monthly aggregate
 ```
 
 ### Email Setup
@@ -128,11 +154,13 @@ Use `/sincenety` directly inside Claude Code sessions.
 ```
 sincenety/
 ├── src/
-│   ├── cli.ts                  # CLI entry (commander, 5 subcommands)
-│   ├── core/gatherer.ts        # Core logic (parse → group → store → report)
+│   ├── cli.ts                  # CLI entry (commander, 7 subcommands)
+│   ├── core/
+│   │   ├── gatherer.ts         # Core logic (parse → group → store → report)
+│   │   └── summarizer.ts       # Claude API summarization + heuristic fallback
 │   ├── parser/
 │   │   ├── history.ts          # ~/.claude/history.jsonl streaming parser
-│   │   └── session-jsonl.ts    # Session JSONL parser (tokens/model/timing)
+│   │   └── session-jsonl.ts    # Session JSONL parser (tokens/model/timing/conversationTurns)
 │   ├── grouper/session.ts      # Session grouping by sessionId + project
 │   ├── storage/
 │   │   ├── adapter.ts          # StorageAdapter interface
@@ -158,14 +186,17 @@ sincenety/
 ~/.claude/history.jsonl  ──→  Extract session list (sessionId + project)
                                     │
                                     ▼
-~/.claude/projects/[project]/[sessionId].jsonl  ──→  Extract tokens/model/timing
+~/.claude/projects/[project]/[sessionId].jsonl  ──→  Extract tokens/model/timing/turns
                                     │
                                     ▼
                              Group + summarize
                                     │
-                     ┌──────────────┼──────────────┐
-                     ▼              ▼              ▼
-              Terminal output   DB save (encrypted)  Email send
+                     ┌──────────┬───┼───────┬──────────────┐
+                     ▼          ▼   ▼       ▼              ▼
+              Terminal table  DB save  Email  --json output  AI summary
+              (box-drawing)  (encrypted)            │       (Claude Code
+               + CJK-aware                         ▼        or API)
+                                            save-daily ──→ daily_reports
 ```
 
 ### Encryption
@@ -182,6 +213,7 @@ sincenety/
 |-------|-------------|
 | `sessions` | Per-session work records (22 columns — tokens, timing, title, description, model, etc.) |
 | `gather_reports` | Report per gather run (markdown + JSON) |
+| `daily_reports` | AI-generated daily/weekly/monthly summaries (UNIQUE(report_date, report_type)) |
 | `checkpoints` | Last processed timestamp |
 | `config` | Settings (email, SMTP, etc.) |
 
@@ -215,11 +247,13 @@ node dist/cli.js     # Direct execution
 
 ## Roadmap
 
+- [x] Weekly/monthly summary reports
 - [ ] Passphrase encryption option
 - [ ] Similar task matching (TF-IDF)
 - [ ] External DB connectors (MariaDB/PostgreSQL)
-- [ ] Weekly/monthly summary reports
 - [ ] ccusage integration (automatic cost calculation)
+- [ ] Multi-language report output (EN/KO toggle)
+- [ ] Report export (PDF/HTML standalone)
 
 ---
 

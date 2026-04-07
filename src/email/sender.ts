@@ -87,30 +87,39 @@ export async function sendGatherEmail(
   try {
     const sessionsJson = JSON.parse(report.reportJson || "[]");
     const emailData: EmailData = {
-      sessions: sessionsJson.map((s: Record<string, unknown>): SessionData => ({
-        sessionId: (s.sessionId as string) ?? "",
-        projectName: (s.projectName as string) ?? "",
-        startedAt: (s.startedAt as number) ?? report.fromTimestamp,
-        endedAt: (s.endedAt as number) ?? report.toTimestamp,
-        durationMinutes: (s.durationMinutes as number) ?? 0,
-        messageCount: (s.messageCount as number) ?? 0,
-        userMessageCount: (s.userMessageCount as number) ?? 0,
-        assistantMessageCount: (s.assistantMessageCount as number) ?? 0,
-        inputTokens: (s.inputTokens as number) ?? 0,
-        outputTokens: (s.outputTokens as number) ?? 0,
-        totalTokens: (s.totalTokens as number) ?? 0,
-        title: (s.title as string) ?? "",
-        summary: (s.title as string) ?? "",
-        description: (s.description as string) ?? "",
-        model: (s.model as string) ?? "",
-        category: (s.category as string) ?? "",
-        actions: ((s.actions as unknown[]) ?? []).map((a: any) => ({
-          time: a.time ?? "",
-          input: a.input ?? "",
-          result: a.result ?? "",
-          significance: a.significance ?? "",
-        })),
-      })),
+      sessions: sessionsJson.map((s: Record<string, unknown>): SessionData => {
+        const wu = s.wrapUp as Record<string, string> | undefined;
+        return {
+          sessionId: (s.sessionId as string) ?? "",
+          projectName: (s.projectName as string) ?? "",
+          startedAt: (s.startedAt as number) ?? report.fromTimestamp,
+          endedAt: (s.endedAt as number) ?? report.toTimestamp,
+          durationMinutes: (s.durationMinutes as number) ?? 0,
+          messageCount: (s.messageCount as number) ?? 0,
+          userMessageCount: (s.userMessageCount as number) ?? 0,
+          assistantMessageCount: (s.assistantMessageCount as number) ?? 0,
+          inputTokens: (s.inputTokens as number) ?? 0,
+          outputTokens: (s.outputTokens as number) ?? 0,
+          totalTokens: (s.totalTokens as number) ?? 0,
+          title: (s.title as string) ?? "",
+          summary: (s.title as string) ?? "",
+          description: (s.description as string) ?? "",
+          model: (s.model as string) ?? "",
+          category: (s.category as string) ?? "",
+          actions: ((s.actions as unknown[]) ?? []).map((a: any) => ({
+            time: a.time ?? "",
+            input: a.input ?? "",
+            result: a.result ?? "",
+            significance: a.significance ?? "",
+          })),
+          wrapUp: wu ? {
+            outcome: wu.outcome ?? "",
+            significance: wu.significance ?? "",
+            flow: wu.flow,
+            nextSteps: wu.nextSteps,
+          } : undefined,
+        };
+      }),
       fromTimestamp: report.fromTimestamp,
       toTimestamp: report.toTimestamp,
       gatheredAt: report.gatheredAt,

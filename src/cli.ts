@@ -32,6 +32,7 @@ program
   .option("--detail", "세션 JSONL 상세 모드 (토큰/시간 추출)", true)
   .option("--no-detail", "history.jsonl만 사용 (빠른 모드)")
   .option("--auto", "자동 갈무리 + 이메일 발송 (스케줄러용)")
+  .option("--json", "구조화 JSON 출력 (스킬 연동용, 대화 턴 포함)")
   .action(async (_, options) => {
     // "log" 서브커맨드가 아닌 경우에만 갈무리 실행
     if (program.args[0] === "log") return;
@@ -59,12 +60,49 @@ program
         historyPath,
         useSessionJsonl: options.detail !== false,
       });
+
+      // --json: 대화 턴 포함 구조화 JSON 출력 (Claude Code 스킬 연동용)
+      if (options.json) {
+        const jsonOutput = {
+          fromTimestamp: result.fromTimestamp,
+          toTimestamp: result.toTimestamp,
+          isFirstRun: result.isFirstRun,
+          sessions: result.sessions.map((s) => ({
+            sessionId: s.sessionId,
+            projectName: s.projectName,
+            startedAt: s.startedAt,
+            endedAt: s.endedAt,
+            durationMinutes: s.durationMinutes ?? 0,
+            messageCount: s.messageCount,
+            userMessageCount: s.userMessageCount ?? 0,
+            assistantMessageCount: s.assistantMessageCount ?? 0,
+            toolCallCount: s.toolCallCount ?? 0,
+            inputTokens: s.inputTokens ?? 0,
+            outputTokens: s.outputTokens ?? 0,
+            totalTokens: (s.inputTokens ?? 0) + (s.outputTokens ?? 0),
+            model: s.model ?? "",
+            title: s.title ?? s.summary,
+            description: s.description ?? "",
+            // 대화 턴: 사용자 입력 + 어시스턴트 응답 쌍
+            conversationTurns: (s.conversationTurns ?? []).map((t) => ({
+              timestamp: t.timestamp,
+              userInput: t.userInput,
+              assistantOutput: t.assistantOutput,
+            })),
+          })),
+        };
+        console.log(JSON.stringify(jsonOutput));
+        return;
+      }
+
       console.log(formatGatherReport(result));
 
-      // --auto: 갈무리 후 이메일 발송 (설정된 경우)
-      if (options.auto) {
-        const configured = await isEmailConfigured(storage);
-        if (configured) {
+      // 이메일 설정 상태 확인
+      const emailConfigured = await isEmailConfigured(storage);
+
+      if (emailConfigured) {
+        // --auto 또는 세션이 있을 때 자동 발송
+        if (options.auto && result.sessions.length > 0) {
           try {
             await sendGatherEmail(storage);
           } catch (emailErr) {
@@ -73,6 +111,23 @@ program
             );
           }
         }
+      } else if (result.isFirstRun) {
+        // 첫 실행 시 이메일 설정 안내
+        console.log("  ────────────────────────────────────────────────────────");
+        console.log("  📧 이메일 발송을 설정하면 갈무리 리포트를 메일로 받을 수 있습니다.");
+        console.log("");
+        console.log("  1. Google 앱 비밀번호 생성 (2단계 인증 필요):");
+        console.log("     https://myaccount.google.com/apppasswords");
+        console.log("");
+        console.log("  2. sincenety에 이메일 설정:");
+        console.log("     sincenety config --email    you@gmail.com");
+        console.log("     sincenety config --smtp-user you@gmail.com");
+        console.log("     sincenety config --smtp-pass");
+        console.log("");
+        console.log("  설정 후 'sincenety email'로 발송하거나,");
+        console.log("  'sincenety --auto'로 갈무리+발송을 한 번에 실행할 수 있습니다.");
+        console.log("  (이메일 없이도 터미널 출력은 항상 동작합니다)");
+        console.log("");
       }
     } catch (err) {
       console.error(
@@ -138,6 +193,7 @@ program
   .option("--smtp-port <port>", "SMTP 포트 (기본: 587)")
   .option("--smtp-user <user>", "SMTP 사용자 (발신 이메일)")
   .option("--smtp-pass", "SMTP 앱 비밀번호 설정 (프롬프트 입력)")
+  // .option("--api-key", "Anthropic API 키 설정 (프롬프트 입력, 세션 요약용)") // 비활성화: 내부 실행 전용
   .action(async (options) => {
     const storage = new SqlJsAdapter();
     try {
@@ -257,6 +313,210 @@ program
         `  ❌ ${err instanceof Error ? err.message : String(err)}`
       );
       process.exit(1);
+    }
+  });
+
+// save-daily 서브커맨드: AI 요약 일일보고 저장
+program
+  .command("save-daily")
+  .description("AI 요약 일일보고를 DB에 저장 (stdin으로 JSON 입력)")
+  .option("--type <type>", "보고 유형: daily | weekly | monthly", "daily")
+  .action(async (options) => {
+    // stdin 읽기
+    const chunks: Buffer[] = [];
+    for await (const chunk of process.stdin) {
+      chunks.push(chunk as Buffer);
+    }
+    const input = Buffer.concat(chunks).toString("utf-8").trim();
+
+    if (!input) {
+      console.error("  ❌ 입력 데이터가 없습니다. stdin으로 JSON을 전달해 주세요.");
+      process.exit(1);
+    }
+
+    let data: {
+      date: string;
+      overview?: string;
+      sessions: Array<{
+        sessionId: string;
+        projectName?: string;
+        topic?: string;
+        outcome?: string;
+        flow?: string;
+        significance?: string;
+        nextSteps?: string;
+        startedAt?: number;
+        endedAt?: number;
+        durationMinutes?: number;
+        messageCount?: number;
+        totalTokens?: number;
+      }>;
+    };
+
+    try {
+      data = JSON.parse(input);
+      if (!data.date || !Array.isArray(data.sessions)) {
+        throw new Error("date와 sessions 필드가 필요합니다");
+      }
+    } catch (err) {
+      console.error(`  ❌ JSON 파싱 실패: ${err instanceof Error ? err.message : String(err)}`);
+      process.exit(1);
+    }
+
+    const storage = new SqlJsAdapter();
+    try {
+      await storage.initialize();
+
+      // 세션 통계 보완: DB에서 해당 날짜 세션 데이터 가져오기
+      const dbSessions = await storage.getSessionsByDate(data.date);
+      let totalMessages = 0;
+      let totalTokens = 0;
+
+      // 각 요약에 DB 통계 병합
+      for (const summary of data.sessions) {
+        const dbSession = dbSessions.find(
+          (s) => s.id === summary.sessionId
+        );
+        if (dbSession) {
+          summary.startedAt ??= dbSession.startedAt;
+          summary.endedAt ??= dbSession.endedAt;
+          summary.durationMinutes ??= dbSession.durationMinutes;
+          summary.messageCount ??= dbSession.messageCount;
+          summary.totalTokens ??= dbSession.totalTokens;
+          summary.projectName ??= dbSession.projectName;
+        }
+        totalMessages += summary.messageCount ?? 0;
+        totalTokens += summary.totalTokens ?? 0;
+      }
+
+      // 기간 계산
+      const dateObj = new Date(data.date);
+      const periodFrom = dateObj.getTime();
+      const periodTo = periodFrom + 86400000; // +1일
+
+      await storage.saveDailyReport({
+        reportDate: data.date,
+        reportType: options.type as "daily" | "weekly" | "monthly",
+        periodFrom,
+        periodTo,
+        sessionCount: data.sessions.length,
+        totalMessages,
+        totalTokens,
+        summaryJson: JSON.stringify(data.sessions),
+        overview: data.overview ?? null,
+        reportMarkdown: null,
+        createdAt: Date.now(),
+        emailedAt: null,
+        emailTo: null,
+      });
+
+      console.log(`  ✅ ${options.type === "daily" ? "일일" : options.type === "weekly" ? "주간" : "월간"}보고 저장 완료: ${data.date} (${data.sessions.length}세션)`);
+    } catch (err) {
+      console.error(`  ❌ ${err instanceof Error ? err.message : String(err)}`);
+      process.exit(1);
+    } finally {
+      await storage.close();
+    }
+  });
+
+// report 서브커맨드: 주간/월간 보고 조회
+program
+  .command("report")
+  .description("일일보고 조회/집계")
+  .option("--date <date>", "특정 날짜 일일보고 조회")
+  .option("--week", "이번 주 일일보고 집계")
+  .option("--month", "이번 달 일일보고 집계")
+  .option("--from <date>", "시작 날짜 (YYYY-MM-DD)")
+  .option("--to <date>", "종료 날짜 (YYYY-MM-DD)")
+  .option("--json", "JSON 출력 (스킬 연동용)")
+  .action(async (options) => {
+    const storage = new SqlJsAdapter();
+    try {
+      await storage.initialize();
+
+      let from: string;
+      let to: string;
+      let label: string;
+
+      if (options.date) {
+        // 단일 날짜
+        const report = await storage.getDailyReport(options.date);
+        if (!report) {
+          console.log(`  ${options.date}에 일일보고가 없습니다.`);
+          return;
+        }
+        if (options.json) {
+          console.log(JSON.stringify(report));
+        } else {
+          console.log(`\n  📋 ${options.date} 일일보고 (${report.sessionCount}세션)`);
+          if (report.overview) console.log(`  ${report.overview}`);
+          const sessions = JSON.parse(report.summaryJson || "[]");
+          for (const s of sessions) {
+            console.log(`\n  [${s.projectName}] ${s.topic ?? ""}`);
+            if (s.outcome) console.log(`    결과: ${s.outcome}`);
+            if (s.flow) console.log(`    흐름: ${s.flow}`);
+          }
+          console.log("");
+        }
+        return;
+      }
+
+      if (options.week) {
+        const now = new Date();
+        const day = now.getDay();
+        const monday = new Date(now);
+        monday.setDate(now.getDate() - (day === 0 ? 6 : day - 1));
+        from = monday.toISOString().slice(0, 10);
+        to = now.toISOString().slice(0, 10);
+        label = `이번 주 (${from} ~ ${to})`;
+      } else if (options.month) {
+        const now = new Date();
+        from = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-01`;
+        to = now.toISOString().slice(0, 10);
+        label = `이번 달 (${from} ~ ${to})`;
+      } else if (options.from && options.to) {
+        from = options.from;
+        to = options.to;
+        label = `${from} ~ ${to}`;
+      } else {
+        // 기본: 오늘
+        from = new Date().toISOString().slice(0, 10);
+        to = from;
+        label = `오늘 (${from})`;
+      }
+
+      const reports = await storage.getDailyReportsByRange(from, to);
+
+      if (reports.length === 0) {
+        console.log(`  ${label}에 일일보고가 없습니다.`);
+        return;
+      }
+
+      if (options.json) {
+        console.log(JSON.stringify(reports));
+        return;
+      }
+
+      // 터미널 출력
+      const totalSessions = reports.reduce((s, r) => s + r.sessionCount, 0);
+      const totalTokens = reports.reduce((s, r) => s + r.totalTokens, 0);
+      console.log(`\n  📋 ${label} — ${reports.length}일, ${totalSessions}세션`);
+      console.log("  " + "─".repeat(56));
+
+      for (const r of reports) {
+        console.log(`\n  📅 ${r.reportDate} (${r.sessionCount}세션)`);
+        if (r.overview) console.log(`    ${r.overview}`);
+        const sessions = JSON.parse(r.summaryJson || "[]");
+        for (const s of sessions) {
+          console.log(`    • [${s.projectName}] ${s.topic ?? ""}`);
+        }
+      }
+      console.log("");
+    } catch (err) {
+      console.error(`  ❌ ${err instanceof Error ? err.message : String(err)}`);
+      process.exit(1);
+    } finally {
+      await storage.close();
     }
   });
 

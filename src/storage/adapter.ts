@@ -45,6 +45,23 @@ export interface GatherReport {
   emailTo: string | null;
 }
 
+export interface DailyReport {
+  id?: number;
+  reportDate: string;                                  // 'YYYY-MM-DD'
+  reportType: "daily" | "weekly" | "monthly";
+  periodFrom: number;
+  periodTo: number;
+  sessionCount: number;
+  totalMessages: number;
+  totalTokens: number;
+  summaryJson: string;                                 // AI 요약 배열 JSON
+  overview: string | null;                             // 종합 서술
+  reportMarkdown: string | null;
+  createdAt: number;
+  emailedAt: number | null;
+  emailTo: string | null;
+}
+
 export interface StorageAdapter {
   initialize(): Promise<void>;
   close(): Promise<void>;
@@ -60,6 +77,13 @@ export interface StorageAdapter {
   getGatherReportsByDate(dateStr: string): Promise<GatherReport[]>;
   getLatestGatherReport(): Promise<GatherReport | null>;
   updateReportEmail(reportId: number, emailedAt: number, emailTo: string): Promise<void>;
+
+  // 일일/주간/월간 보고
+  saveDailyReport(report: DailyReport): Promise<number>;
+  getDailyReport(date: string, type?: string): Promise<DailyReport | null>;
+  getDailyReportsByRange(from: string, to: string, type?: string): Promise<DailyReport[]>;
+  getLatestDailyReport(type?: string): Promise<DailyReport | null>;
+  updateDailyReportEmail(reportId: number, emailedAt: number, emailTo: string): Promise<void>;
 
   // 설정
   getConfig(key: string): Promise<string | null>;

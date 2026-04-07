@@ -29,6 +29,10 @@ export interface SessionDetail {
   description: string;
   category: string;
   model: string;
+  /** 사용자 입력 전체 목록 (타임스탬프 포함) */
+  userInputs: Array<{ timestamp: number; text: string }>;
+  /** 대화 턴 (사용자 입력 + 어시스턴트 응답 쌍) — 요약 생성용 */
+  conversationTurns: Array<{ userInput: string; assistantOutput: string; timestamp: number }>;
 }
 
 interface SessionJsonlEntry {
@@ -103,11 +107,18 @@ function isSlashCommand(text: string): boolean {
   return cleaned.startsWith("/");
 }
 
-function cleanTitle(text: string): string {
+/** XML/HTML 태그, 시스템 메시지, 슬래시 커맨드 프리픽스 등을 정리 */
+function cleanText(text: string): string {
   return text
-    .replace(/<[^>]+>/g, "")   // XML/HTML 태그 제거
-    .replace(/\n/g, " ")
+    .replace(/<[^>]*>/g, "")                     // XML/HTML 태그 제거
+    .replace(/Caveat:.*?(?=\n|$)/gi, "")         // Caveat 시스템 메시지 제거
+    .replace(/Base directory for this skill:.*?(?=\n|$)/gi, "")
+    .replace(/\s+/g, " ")                        // 연속 공백/줄바꿈 → 단일 공백
     .trim();
+}
+
+function cleanTitle(text: string): string {
+  return cleanText(text);
 }
 
 function mostCommon(values: string[]): string {
@@ -163,7 +174,12 @@ export async function parseSessionJsonl(
   let cacheReadTokens = 0;
 
   const userTexts: string[] = [];
+  const userInputs: Array<{ timestamp: number; text: string }> = [];
   const models: string[] = [];
+
+  // 대화 턴 수집: 사용자 입력 → 어시스턴트 응답 쌍
+  let pendingUserInput: { text: string; timestamp: number } | null = null;
+  const conversationTurns: Array<{ userInput: string; assistantOutput: string; timestamp: number }> = [];
 
   const rl = createInterface({
     input: createReadStream(filePath, { encoding: "utf-8" }),
@@ -200,7 +216,20 @@ export async function parseSessionJsonl(
     if (type === "user" && entry.message?.role === "user") {
       userMessageCount++;
       const text = extractTextContent(entry.message.content);
-      if (text) userTexts.push(text);
+      if (text) {
+        userTexts.push(text);
+        const ts = entry.timestamp ? new Date(entry.timestamp).getTime() : 0;
+        userInputs.push({ timestamp: ts, text });
+        // 이전 pending이 있으면 응답 없이 턴 저장
+        if (pendingUserInput) {
+          conversationTurns.push({
+            userInput: pendingUserInput.text,
+            assistantOutput: "",
+            timestamp: pendingUserInput.timestamp,
+          });
+        }
+        pendingUserInput = { text, timestamp: ts };
+      }
     }
 
     if (type === "assistant" && entry.message?.role === "assistant") {
@@ -208,6 +237,20 @@ export async function parseSessionJsonl(
 
       if (entry.message.model) {
         models.push(entry.message.model);
+      }
+
+      // 어시스턴트 응답 텍스트 수집 (첫 300자만 — 메모리 절약)
+      const assistText = extractTextContent(entry.message.content);
+      const assistSummary = assistText.length > 300 ? assistText.slice(0, 300) : assistText;
+
+      // 대화 턴 완성
+      if (pendingUserInput) {
+        conversationTurns.push({
+          userInput: pendingUserInput.text,
+          assistantOutput: assistSummary,
+          timestamp: pendingUserInput.timestamp,
+        });
+        pendingUserInput = null;
       }
 
       const usage = entry.message.usage;
@@ -220,6 +263,15 @@ export async function parseSessionJsonl(
     }
   }
 
+  // 마지막 pending 사용자 입력 처리
+  if (pendingUserInput) {
+    conversationTurns.push({
+      userInput: pendingUserInput.text,
+      assistantOutput: "",
+      timestamp: pendingUserInput.timestamp,
+    });
+  }
+
   // Edge case: empty or no messages
   if (startedAt === Infinity) startedAt = 0;
   if (endedAt === -Infinity) endedAt = 0;
@@ -227,16 +279,19 @@ export async function parseSessionJsonl(
   const durationMinutes = (endedAt - startedAt) / 60000;
   const totalTokens = inputTokens + outputTokens;
 
-  // Title: first non-slash user message, truncated to 100 chars
+  // Title: first non-slash user message, cleaned and truncated
   const firstNonSlash = userTexts.find((t) => !isSlashCommand(t)) ?? userTexts[0] ?? "";
   const title = truncate(cleanTitle(firstNonSlash), 100);
   const summary = title;
 
-  // Description: first 3-5 user messages joined, truncated to 500 chars
-  const descSlice = userTexts.slice(0, 5);
+  // Description: 의미 있는 사용자 입력을 정리하여 전체 작업 흐름 파악용
+  // 짧은 응답(ok, yes 등)과 슬래시 커맨드는 필터링, 나머지 전부 포함
+  const meaningfulInputs = userTexts
+    .map((t) => cleanText(t))
+    .filter((t) => t.length > 5 && !t.startsWith("/"));
   const description = truncate(
-    descSlice.map((t) => t.replace(/\n/g, " ").trim()).join(" | "),
-    500,
+    meaningfulInputs.join(" | "),
+    2000,
   );
 
   const projectName = project.split("/").filter(Boolean).pop() ?? project;
@@ -263,6 +318,8 @@ export async function parseSessionJsonl(
     description,
     category: projectName,
     model,
+    userInputs,
+    conversationTurns,
   };
 }
 
@@ -310,6 +367,8 @@ export async function enrichSessionsFromJsonl(
         category:
           base.project.split("/").filter(Boolean).pop() ?? base.project,
         model: "",
+        userInputs: [],
+        conversationTurns: [],
       });
     }
   }

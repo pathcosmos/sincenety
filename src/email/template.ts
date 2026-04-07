@@ -58,8 +58,15 @@ function fmtTok(n: number): string {
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
   return String(n);
 }
+/** XML/시스템 태그를 제거한 뒤 HTML 이스케이프 */
 function esc(s: string): string {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const cleaned = s
+    .replace(/<[^>]*>/g, "")                       // XML/HTML 태그 제거
+    .replace(/Caveat:.*?(?=\n|$)/gi, "")           // 시스템 메시지
+    .replace(/Base directory for this skill:.*?(?=\n|$)/gi, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return cleaned.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 function trunc(s: string, max: number): string {
   return s.length > max ? s.slice(0, max - 1) + "…" : s;
@@ -94,6 +101,7 @@ export interface SessionData {
   wrapUp?: {
     outcome: string;
     significance: string;
+    flow?: string;
     nextSteps?: string;
   };
 }
@@ -124,10 +132,10 @@ function wrapUpCard(s: SessionData, idx: number): string {
   const dots = ["🔵", "🟢", "🟡", "🟣", "🔴", "🟠"];
   const dot = dots[idx % dots.length];
 
-  const outcome = s.wrapUp?.outcome || s.description || s.summary;
-  const significance = s.wrapUp?.significance
-    || (s.actions.length > 0 ? s.actions[s.actions.length - 1].significance : "")
-    || s.summary;
+  // wrapUp에서 가져오되, fallback도 태그 정리된 텍스트 사용
+  const outcome = s.wrapUp?.outcome || s.description || s.title || s.summary;
+  const significance = s.wrapUp?.significance || s.title || s.summary;
+  const flow = s.wrapUp?.flow || "";
   const nextSteps = s.wrapUp?.nextSteps;
   const tokens = s.totalTokens;
 
@@ -158,6 +166,15 @@ function wrapUpCard(s: SessionData, idx: number): string {
               <span style="color:${C.text};line-height:1.5">${esc(trunc(outcome, 150))}</span>
             </div>
           </div>
+          ${flow ? `
+          <!-- 작업 흐름 -->
+          <div style="margin-top:6px">
+            <div style="font-size:11px">
+              <span style="color:${C.accent}">🔄</span>
+              <span style="color:${C.textDim};font-size:10px;font-weight:600;margin:0 6px">흐름</span>
+              <span style="color:${C.textMuted};line-height:1.5">${esc(trunc(flow, 200))}</span>
+            </div>
+          </div>` : ""}
           <!-- 의미 -->
           <div style="margin-top:6px">
             <div style="font-size:11px">
@@ -270,17 +287,32 @@ export function renderEmailHtml(data: EmailData): string {
     </td></tr>`;
   }).join("\n");
 
-  // Section 4: 하루의 성과
+  // Section 4: 하루의 성과 — 세션별 작업 흐름 요약
   const achieveCards = sessions.map((s, idx) => {
     const color = SESSION_COLORS[idx % SESSION_COLORS.length];
+    const bg = SESSION_BG[idx % SESSION_BG.length];
     const dots = ["🔵", "🟢", "🟡", "🟣", "🔴", "🟠"];
-    const sig = s.wrapUp?.significance
-      || (s.actions.length > 0 ? s.actions[s.actions.length - 1].significance : "")
-      || s.description || s.summary;
-    return `<div style="padding:8px 0;${idx < sessions.length - 1 ? `border-bottom:1px solid ${C.border};` : ""}">
-      <span style="font-size:12px">${dots[idx % dots.length]}</span>
-      <span style="font-size:12px;color:${color};font-weight:700;margin:0 6px">${esc(s.projectName)}</span>
-      <span style="font-size:12px;color:${C.text}">${esc(trunc(sig, 80))}</span>
+
+    // 주제: 첫 의미 있는 작업
+    const topic = s.wrapUp?.significance || s.title || s.summary;
+    // 흐름: 작업 전체 진행 (outcome = 주요 입력들 → 연결)
+    const flow = s.wrapUp?.outcome || s.description || s.summary;
+
+    return `<div style="padding:12px 0;${idx < sessions.length - 1 ? `border-bottom:1px solid ${C.border};` : ""}">
+      <!-- 프로젝트 + 주제 -->
+      <div>
+        <span style="font-size:12px">${dots[idx % dots.length]}</span>
+        <span style="font-size:13px;color:${color};font-weight:700;margin:0 6px">${esc(s.projectName)}</span>
+        <span style="font-size:10px;color:${C.textDim}">${fmtDur(s.durationMinutes)} · ${s.messageCount}msg</span>
+      </div>
+      <!-- 핵심 주제 -->
+      <div style="margin-top:6px;font-size:12px;color:${C.text};font-weight:600">
+        📌 ${esc(trunc(topic, 100))}
+      </div>
+      <!-- 작업 흐름 -->
+      <div style="margin-top:4px;font-size:11px;color:${C.textMuted};line-height:1.6">
+        ${esc(trunc(flow, 200))}
+      </div>
     </div>`;
   }).join("");
 
