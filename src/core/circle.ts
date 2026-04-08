@@ -176,7 +176,8 @@ export async function circleSave(
   storage: StorageAdapter,
   input: CircleSaveInput,
 ): Promise<void> {
-  const { date, type = "daily", overview, sessions: inputSessions } = input;
+  const { date, type = "daily", sessions: inputSessions } = input;
+  let { overview } = input;
 
   // DB에서 해당 날짜의 세션 통계 조회
   const dbSessions = await storage.getSessionsByDate(date);
@@ -210,6 +211,13 @@ export async function circleSave(
   const [y, m, d] = date.split("-").map(Number);
   const periodFrom = new Date(y, m - 1, d, 0, 0, 0, 0).getTime();
   const periodTo = periodFrom + 86400000 - 1;
+
+  // 휴가일 감지
+  const { isVacationDay } = await import("../vacation/manager.js");
+  const isVacation = await isVacationDay(storage, date);
+  if (isVacation && mergedSessions.length === 0) {
+    overview = overview ?? "[휴가]";
+  }
 
   // 오늘이면 in_progress, 아니면 finalized
   const todayStr = toDateStr(new Date());

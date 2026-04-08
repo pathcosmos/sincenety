@@ -11,6 +11,14 @@ description: Use when the user wants to log, review, or summarize their Claude C
 
 사용자가 `/sincenety`를 입력하면 아래 5단계를 순서대로 수행합니다.
 
+### 0단계: 휴가 감지 (Google Calendar MCP 있을 때)
+
+Google Calendar MCP가 사용 가능하면 (`gcal_list_events` 호출 성공):
+1. `gcal_list_events`로 해당 기간의 종일 이벤트 조회
+2. 제목에 휴가/연차/PTO/병가/반차 키워드 감지
+3. 감지된 날짜를 자동 등록: `sincenety config --vacation YYYY-MM-DD --vacation-type vacation`
+4. 이미 등록된 날짜는 스킵
+
 ### 1단계: 데이터 수집 + 요약 필요 데이터 출력
 
 ```bash
@@ -86,13 +94,23 @@ echo '{ "date": "YYYY-MM-DD", "overview": "주간 종합", "sessions": [...] }' 
 ### 5단계: 이메일 발송 (설정된 경우)
 
 발송 경로 자동 판단:
-1. Gmail MCP 사용 가능? → `gmail_get_profile` 확인 후 `sincenety out --render-only`로 HTML 획득 → `gmail_create_draft`로 발송
-2. SMTP/Resend 설정됨? → `sincenety out`으로 발송 (요일 기준 일일/주간/월간 자동 판단)
-3. 설정 없음? → 터미널 출력만 (이메일 스킵)
 
+**경로 A: Gmail MCP (Claude Code 안, 설정 불필요)**
+1. `gmail_get_profile` 호출 — 성공하면 Gmail MCP 사용 가능
+2. `sincenety out --render-only` 실행 → JSON 출력 (subject, recipient, html)
+3. JSON에서 subject, recipient, html 추출
+4. `gmail_create_draft`로 이메일 초안 생성 (`contentType: "text/html"`)
+5. 사용자에게 확인 후 발송 (또는 초안 유지)
+
+**경로 B: SMTP/Resend (설정 필요)**
 ```bash
 sincenety out
 ```
+
+**경로 C: 설정 없음**
+터미널 출력만 (이메일 스킵)
+
+**참고:** 휴가일에는 발신이 자동 스킵됩니다 (강제 발신: `sincenety outd`)
 
 ## 워크플로우: 주간/월간 보고 생성
 

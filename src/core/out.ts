@@ -156,6 +156,17 @@ export async function runOut(
 
   const today = new Date();
 
+  // 1.5. 휴가일 체크 — force가 아니면 스킵
+  if (!options?.force) {
+    const { isVacationDay } = await import("../vacation/manager.js");
+    const todayStr = today.toISOString().slice(0, 10);
+    if (await isVacationDay(storage, todayStr)) {
+      console.log("  📅 오늘은 휴가일입니다. 발신을 건너뜁니다.");
+      console.log("  (강제 발신: sincenety outd)");
+      return result;
+    }
+  }
+
   // 2. 발송할 보고서 유형 결정
   let reportTypes: string[];
 
