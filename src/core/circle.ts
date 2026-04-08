@@ -7,6 +7,7 @@
 
 import type { StorageAdapter, DailyReport } from "../storage/adapter.js";
 import { runAir, type AirOptions, type AirResult } from "./air.js";
+import type { CfAiConfig } from "../cloud/cf-ai.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -246,14 +247,91 @@ export async function circleSave(
 }
 
 /**
+ * Cloudflare Workers AI로 변경된 날짜의 세션을 자동 요약.
+ * D1 토큰(d1_account_id + d1_api_token)이 설정되어 있을 때만 동작.
+ */
+export async function autoSummarize(
+  storage: StorageAdapter,
+  changedDates: string[],
+): Promise<number> {
+  // Check if Cloudflare AI is available
+  const [accountId, apiToken] = await Promise.all([
+    storage.getConfig("d1_account_id"),
+    storage.getConfig("d1_api_token"),
+  ]);
+  if (!accountId || !apiToken) return 0;
+
+  const { summarizeSession, generateOverview } = await import("../cloud/cf-ai.js");
+  const config: CfAiConfig = { accountId, apiToken };
+  let summarized = 0;
+
+  for (const date of changedDates) {
+    const report = await storage.getGatherReportByDate(date);
+    if (!report?.reportJson) continue;
+
+    try {
+      const sessions = JSON.parse(report.reportJson);
+      const summaries: Array<{
+        sessionId: string;
+        projectName: string;
+        topic: string;
+        outcome: string;
+        flow: string;
+        significance: string;
+        nextSteps?: string;
+      }> = [];
+
+      for (const s of sessions) {
+        const turns = s.conversationTurns ?? [];
+        if (turns.length === 0) continue;
+
+        const summary = await summarizeSession(config, s.projectName ?? "", turns);
+        if (summary) {
+          summaries.push({
+            sessionId: s.sessionId,
+            projectName: s.projectName,
+            ...summary,
+          });
+        }
+      }
+
+      if (summaries.length > 0) {
+        const overview = await generateOverview(config, date, summaries);
+        await circleSave(storage, {
+          date,
+          type: "daily",
+          overview: overview ?? undefined,
+          sessions: summaries,
+        });
+        summarized++;
+        console.log(`  🤖 ${date} AI 요약 완료 (${summaries.length}세션, Cloudflare AI)`);
+      }
+    } catch (err) {
+      console.warn(`  ⚠️ ${date} AI 요약 실패: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  return summarized;
+}
+
+/**
  * circle 메인 오케스트레이터 — air 실행 + finalize + 변경 날짜 목록 반환.
+ * SKILL.md 흐름(--json/--save)이 아닌 경우, Cloudflare AI로 자동 요약.
  */
 export async function runCircle(
   storage: StorageAdapter,
-  options?: CircleOptions,
+  options?: CircleOptions & { json?: boolean; save?: boolean },
 ): Promise<CircleResult> {
   const airResult = await runAir(storage, options);
   const finalized = await finalizePreviousReports(storage, new Date());
+
+  // Auto-summarize with Cloudflare AI (when not using SKILL.md flow)
+  if (!options?.json && !options?.save) {
+    const summarized = await autoSummarize(storage, airResult.changedDates);
+    if (summarized > 0) {
+      console.log(`  🤖 Cloudflare AI: ${summarized}일 요약 완료`);
+    }
+  }
 
   return {
     airResult,
