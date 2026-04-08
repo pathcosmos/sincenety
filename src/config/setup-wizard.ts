@@ -19,16 +19,25 @@ function prompt(rl: ReturnType<typeof createInterface>, question: string): Promi
   });
 }
 
-/** 비밀번호 프롬프트 (TTY에서 에코 숨김) */
-function promptSecret(question: string): Promise<string> {
-  return new Promise((resolve) => {
+/**
+ * 비밀번호 프롬프트 — readline을 close한 뒤 raw stdin으로 입력받고 readline을 재생성.
+ * 기존 readline과 raw stdin이 동시에 stdin을 점유하면 Linux에서 프로세스가 종료되는 문제 방지.
+ */
+async function promptSecret(
+  question: string,
+  rl: ReturnType<typeof createInterface>,
+): Promise<{ password: string; rl: ReturnType<typeof createInterface> }> {
+  // readline을 완전히 닫아 stdin 점유 해제
+  rl.close();
+
+  const password = await new Promise<string>((resolve) => {
     if (process.stdin.isTTY) {
       process.stdout.write(question);
       const stdin = process.stdin;
       const wasRaw = stdin.isRaw;
       stdin.setRawMode(true);
       stdin.resume();
-      let password = "";
+      let pw = "";
       const onData = (ch: Buffer) => {
         const c = ch.toString("utf8");
         if (c === "\n" || c === "\r") {
@@ -36,29 +45,30 @@ function promptSecret(question: string): Promise<string> {
           stdin.removeListener("data", onData);
           stdin.pause();
           process.stdout.write("\n");
-          resolve(password);
+          resolve(pw);
         } else if (c === "\u0003") {
           stdin.setRawMode(wasRaw ?? false);
           stdin.removeListener("data", onData);
           process.exit(0);
         } else if (c === "\u007f" || c === "\b") {
-          if (password.length > 0) {
-            password = password.slice(0, -1);
-          }
+          if (pw.length > 0) pw = pw.slice(0, -1);
         } else {
-          password += c;
+          pw += c;
         }
       };
       stdin.on("data", onData);
     } else {
-      // Non-TTY fallback
-      const rl = createInterface({ input: process.stdin, output: process.stdout });
-      rl.question(question, (answer) => {
-        rl.close();
+      const tmpRl = createInterface({ input: process.stdin, output: process.stdout });
+      tmpRl.question(question, (answer) => {
+        tmpRl.close();
         resolve(answer.trim());
       });
     }
   });
+
+  // readline 재생성
+  const newRl = createInterface({ input: process.stdin, output: process.stdout });
+  return { password, rl: newRl };
 }
 
 /** SMTP 연결 테스트 */
@@ -102,7 +112,7 @@ async function saveConfigs(storage: StorageAdapter, configs: Record<string, stri
 }
 
 export async function runSetupWizard(storage: StorageAdapter): Promise<WizardResult> {
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  let rl = createInterface({ input: process.stdin, output: process.stdout });
 
   try {
     console.log("");
@@ -136,9 +146,10 @@ export async function runSetupWizard(storage: StorageAdapter): Promise<WizardRes
 
 /** Gmail SMTP 설정 */
 async function setupGmail(
-  rl: ReturnType<typeof createInterface>,
+  _rl: ReturnType<typeof createInterface>,
   storage: StorageAdapter,
 ): Promise<WizardResult> {
+  let rl = _rl;
   console.log("");
   console.log("  ── Gmail SMTP 설정 ──");
   console.log("");
@@ -153,10 +164,10 @@ async function setupGmail(
   console.log("  생성: https://myaccount.google.com/apppasswords");
   console.log("");
 
-  // readline을 일시 중지하고 secret 프롬프트 사용
-  rl.pause();
-  const password = await promptSecret("  앱 비밀번호: ");
-  rl.resume();
+  // readline을 close → raw stdin → readline 재생성
+  const secretResult = await promptSecret("  앱 비밀번호: ", rl);
+  const password = secretResult.password;
+  rl = secretResult.rl;
 
   if (!password) {
     return { provider: "gmail", success: false, message: "비밀번호가 입력되지 않았습니다." };
@@ -187,19 +198,19 @@ async function setupGmail(
 
 /** Resend API 설정 */
 async function setupResend(
-  rl: ReturnType<typeof createInterface>,
+  _rl: ReturnType<typeof createInterface>,
   storage: StorageAdapter,
 ): Promise<WizardResult> {
+  let rl = _rl;
   console.log("");
   console.log("  ── Resend API 설정 ──");
   console.log("");
   console.log("  API 키 생성: https://resend.com/api-keys");
   console.log("");
 
-  // readline을 일시 중지하고 secret 프롬프트 사용
-  rl.pause();
-  const apiKey = await promptSecret("  Resend API 키: ");
-  rl.resume();
+  const secretResult = await promptSecret("  Resend API 키: ", rl);
+  const apiKey = secretResult.password;
+  rl = secretResult.rl;
 
   if (!apiKey) {
     return { provider: "resend", success: false, message: "API 키가 입력되지 않았습니다." };
@@ -232,9 +243,10 @@ async function setupResend(
 
 /** Custom SMTP 설정 */
 async function setupCustomSMTP(
-  rl: ReturnType<typeof createInterface>,
+  _rl: ReturnType<typeof createInterface>,
   storage: StorageAdapter,
 ): Promise<WizardResult> {
+  let rl = _rl;
   console.log("");
   console.log("  ── Custom SMTP 설정 ──");
   console.log("");
@@ -252,9 +264,9 @@ async function setupCustomSMTP(
     return { provider: "custom_smtp", success: false, message: "사용자가 입력되지 않았습니다." };
   }
 
-  rl.pause();
-  const pass = await promptSecret("  SMTP 비밀번호: ");
-  rl.resume();
+  const secretResult = await promptSecret("  SMTP 비밀번호: ", rl);
+  const pass = secretResult.password;
+  rl = secretResult.rl;
 
   if (!pass) {
     return { provider: "custom_smtp", success: false, message: "비밀번호가 입력되지 않았습니다." };
