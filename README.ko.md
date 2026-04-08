@@ -163,10 +163,13 @@ Cloudflare D1을 통한 멀티머신 데이터 통합:
 2. **"Create Token"** → **"Custom token"** (맨 아래 "Get started") 선택
 3. **권한 설정**:
 
-| 권한 | 접근 수준 |
-|------|----------|
-| Account / **D1** | **Edit** (DB 생성 + 읽기/쓰기) |
-| Account / **Workers AI** | **Read** (AI 모델 호출) |
+| 권한 | 접근 수준 | 용도 |
+|------|----------|------|
+| 계정 / **D1** | **Edit** | DB 생성 + 읽기/쓰기 |
+| 계정 / **Workers AI** | **Read** | AI 요약 모델 호출 (Qwen3-30B) |
+| 계정 / **계정 설정** | **Read** | 계정 자동 탐지 (`--d1-token` 설정 시) |
+
+> **3개 모두 필수입니다.** 계정 설정 Read가 없으면 `--d1-token`으로 자동 설정 시 계정을 찾을 수 없습니다.
 
 4. **Account Resources** → Include → 본인 계정 선택
 5. **"Create Token"** → 토큰 복사 (**한 번만 표시됩니다!**)
