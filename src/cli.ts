@@ -117,6 +117,76 @@ async function showConfigStatus(storage: StorageAdapter): Promise<void> {
   }
 
   console.log("  " + hLine("└", "┴", "┘"));
+
+  // D1 section
+  const { hostname } = await import("node:os");
+  const d1Keys = [
+    { key: "d1_account_id", label: "d1_account_id" },
+    { key: "d1_database_id", label: "d1_database_id" },
+    { key: "d1_api_token", label: "d1_api_token" },
+    { key: "machine_id", label: "machine_id" },
+    { key: "last_d1_sync", label: "last_d1_sync" },
+  ];
+
+  const d1Rows: Array<{ label: string; value: string; status: string }> = [];
+
+  for (const k of d1Keys) {
+    const val = await storage.getConfig(k.key);
+    let displayVal: string;
+    let status: string;
+
+    if (val) {
+      if (k.key === "d1_api_token") {
+        displayVal = "********";
+      } else {
+        displayVal = val;
+      }
+      status = "✅ 설정됨";
+    } else if (k.key === "machine_id") {
+      displayVal = hostname();
+      status = "✅ 기본값";
+    } else {
+      displayVal = "(미설정)";
+      status = "─";
+    }
+
+    d1Rows.push({ label: k.label, value: displayVal, status });
+  }
+
+  const d1LabelW = Math.max(labelW, ...d1Rows.map((r) => displayWidth(r.label)));
+  const d1ValueW = Math.max(valueW, ...d1Rows.map((r) => displayWidth(r.value)));
+  const d1StatusW = Math.max(statusW, ...d1Rows.map((r) => displayWidth(r.status)));
+
+  const d1HLine = (l: string, m: string, r: string) =>
+    l +
+    "─".repeat(d1LabelW + 2) +
+    m +
+    "─".repeat(d1ValueW + 2) +
+    m +
+    "─".repeat(d1StatusW + 2) +
+    r;
+
+  console.log("");
+  console.log("  D1 클라우드 동기화");
+  console.log("  " + d1HLine("┌", "┬", "┐"));
+  console.log(
+    "  │" +
+      ` ${padEndW("항목", d1LabelW)} │` +
+      ` ${padEndW("값", d1ValueW)} │` +
+      ` ${padEndW("상태", d1StatusW)} │`,
+  );
+  console.log("  " + d1HLine("├", "┼", "┤"));
+
+  for (const r of d1Rows) {
+    console.log(
+      "  │" +
+        ` ${padEndW(r.label, d1LabelW)} │` +
+        ` ${padEndW(r.value, d1ValueW)} │` +
+        ` ${padEndW(r.status, d1StatusW)} │`,
+    );
+  }
+
+  console.log("  " + d1HLine("└", "┴", "┘"));
   console.log("");
 }
 
@@ -476,6 +546,11 @@ program
   .option("--vacation-list", "등록된 휴가 목록 조회")
   .option("--vacation-clear <date>", "휴가 삭제 (YYYY-MM-DD)")
   .option("--vacation-type <type>", "휴가 유형 (vacation | sick | holiday | half | other)", "vacation")
+  .option("--d1-account <id>", "Cloudflare Account ID")
+  .option("--d1-database <id>", "D1 Database ID")
+  .option("--d1-token <token>", "Cloudflare API Token")
+  .option("--machine-name <name>", "이 머신의 식별 이름")
+  .option("--setup-d1", "D1 설정 위저드")
   .option("--setup", "설정 위저드 실행")
   .action(async (options) => {
     const storage = new SqlJsAdapter();
@@ -600,6 +675,36 @@ program
         changed = true;
       }
 
+      if (options.d1Account) {
+        hasAction = true;
+        await storage.setConfig("d1_account_id", options.d1Account);
+        console.log(`  d1_account_id = ${options.d1Account}`);
+        changed = true;
+      }
+      if (options.d1Database) {
+        hasAction = true;
+        await storage.setConfig("d1_database_id", options.d1Database);
+        console.log(`  d1_database_id = ${options.d1Database}`);
+        changed = true;
+      }
+      if (options.d1Token) {
+        hasAction = true;
+        await storage.setConfig("d1_api_token", options.d1Token);
+        console.log(`  d1_api_token = ********`);
+        changed = true;
+      }
+      if (options.machineName) {
+        hasAction = true;
+        await storage.setConfig("machine_id", options.machineName);
+        console.log(`  machine_id = ${options.machineName}`);
+        changed = true;
+      }
+      if (options.setupD1) {
+        hasAction = true;
+        console.log("  D1 설정 위저드는 향후 구현 예정입니다. 개별 옵션을 사용해 주세요.");
+        return;
+      }
+
       if (changed) {
         console.log("  설정이 저장되었습니다.");
       }
@@ -643,6 +748,84 @@ program
         `  ❌ ${err instanceof Error ? err.message : String(err)}`,
       );
       process.exit(1);
+    }
+  });
+
+// ─── sync 명령 ─────────────────────────────────────────
+
+program
+  .command("sync")
+  .description("D1 중앙 DB 동기화")
+  .option("--push", "로컬 → D1 push")
+  .option("--pull-config", "D1 → 로컬 공유 설정 가져오기")
+  .option("--status", "동기화 상태 확인")
+  .option("--init", "D1 스키마 초기 생성")
+  .action(async (options) => {
+    const storage = new SqlJsAdapter();
+    try {
+      await storage.initialize();
+
+      const { loadD1Client, pushToD1, pullConfigFromD1, getSyncStatus } = await import("./cloud/sync.js");
+      const { ensureD1Schema } = await import("./cloud/d1-schema.js");
+      const { hostname } = await import("node:os");
+
+      const client = await loadD1Client(storage);
+      if (!client) {
+        console.log("  D1 설정이 필요합니다:");
+        console.log("    sincenety config --d1-account <ACCOUNT_ID>");
+        console.log("    sincenety config --d1-database <DATABASE_ID>");
+        console.log("    sincenety config --d1-token <API_TOKEN>");
+        return;
+      }
+
+      const machineId = await storage.getConfig("machine_id") ?? hostname();
+
+      if (options.init) {
+        console.log("  D1 스키마 생성 중...");
+        await ensureD1Schema(client);
+        console.log("  ✅ D1 스키마 생성 완료");
+        return;
+      }
+
+      if (options.status) {
+        const status = await getSyncStatus(storage, client, machineId);
+        console.log("\n  D1 동기화 상태");
+        console.log("  ┌────────────────┬──────────────────────┐");
+        console.log(`  │ 설정           │ ${status.configured ? "✅ 완료" : "❌ 미설정"}${"".padEnd(14)} │`);
+        console.log(`  │ D1 연결        │ ${status.d1Reachable ? "✅ 정상" : "❌ 불가"}${"".padEnd(14)} │`);
+        console.log(`  │ 마지막 sync    │ ${status.lastSync ? new Date(status.lastSync).toLocaleString("ko-KR") : "(없음)"}${"".padEnd(Math.max(0, 20 - (status.lastSync ? new Date(status.lastSync).toLocaleString("ko-KR").length : 4)))} │`);
+        console.log(`  │ 미동기화       │ ~${status.pendingRows}건${"".padEnd(17)} │`);
+        console.log(`  │ machine_id     │ ${machineId.padEnd(20)} │`);
+        console.log("  └────────────────┴──────────────────────┘\n");
+        return;
+      }
+
+      if (options.pullConfig) {
+        console.log("  D1에서 공유 설정 가져오는 중...");
+        const changed = await pullConfigFromD1(storage, client);
+        if (changed.length > 0) {
+          console.log(`  ✅ ${changed.length}개 설정 가져옴: ${changed.join(", ")}`);
+        } else {
+          console.log("  변경된 설정이 없습니다.");
+        }
+        return;
+      }
+
+      // Default: push
+      console.log(`  D1 push 중... (machine: ${machineId})`);
+      await ensureD1Schema(client);
+      const result = await pushToD1(storage, client, machineId);
+      const total = result.pushed.sessions + result.pushed.gatherReports + result.pushed.dailyReports + result.pushed.emailLogs + result.pushed.vacations;
+      console.log(`  ✅ D1 sync 완료 — ${total}건 push`);
+      if (result.pushed.config > 0) console.log(`     공유 설정 ${result.pushed.config}건 동기화`);
+      if (result.errors.length > 0) {
+        console.log(`  ⚠️  ${result.errors.length}건 오류: ${result.errors.slice(0, 3).join(", ")}`);
+      }
+    } catch (err) {
+      console.error(`  ❌ ${err instanceof Error ? err.message : String(err)}`);
+      process.exit(1);
+    } finally {
+      await storage.close();
     }
   });
 
