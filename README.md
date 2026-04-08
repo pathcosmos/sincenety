@@ -104,6 +104,16 @@ Run `sincenety config` with no arguments to see a formatted settings status tabl
 
 Automatically gather at 6 PM (default). Uses launchd on macOS, crontab on Linux.
 
+### Cloud Sync (Cloudflare D1)
+
+Multi-machine data aggregation via Cloudflare D1:
+
+- **Local-first**: encrypted local DB remains the source of truth
+- **`sincenety sync`** pushes local data to a central D1 database
+- **Auto-sync** after `out` completes
+- **Shared config**: SMTP settings set once, work everywhere
+- **`sync --pull-config`** for new machine setup
+
 ### Encrypted Storage
 
 All data is AES-256-GCM encrypted at `~/.sincenety/sincenety.db`. Machine-bound key (hostname + username + random salt) by default.
@@ -210,6 +220,20 @@ sincenety outw    # weekly report
 sincenety outm    # monthly report
 ```
 
+### sync — Cloud Sync (Cloudflare D1)
+
+```bash
+# D1 configuration
+sincenety config --d1-account ACCOUNT_ID --d1-database DB_ID --d1-token TOKEN
+sincenety config --machine-name "office-mac"
+
+# Sync operations
+sincenety sync --init          # Create D1 schema
+sincenety sync                 # Push local → D1
+sincenety sync --pull-config   # Pull shared config from D1
+sincenety sync --status        # Check sync status
+```
+
 ### Claude Code Skill (`/sincenety`)
 
 Use `/sincenety` directly inside Claude Code sessions for AI-powered daily reports.
@@ -272,7 +296,7 @@ sincenety config --smtp-pass    # Prompts for Gmail app password
 ```
 sincenety/
 ├── src/
-│   ├── cli.ts                  # CLI entry (commander: air, circle, out, config, schedule)
+│   ├── cli.ts                  # CLI entry (commander: air, circle, out, sync, config, schedule)
 │   ├── core/
 │   │   ├── air.ts              # Phase 1: date-based gathering (backfill + hash)
 │   │   ├── circle.ts           # Phase 2: LLM summary pipeline (finalization + save)
@@ -303,6 +327,10 @@ sincenety/
 │   │   └── detector.ts         # Vacation keyword detection (KO+EN)
 │   ├── config/
 │   │   └── setup-wizard.ts     # Interactive 3-choice setup wizard
+│   ├── cloud/
+│   │   ├── d1-client.ts        # Cloudflare D1 REST API client
+│   │   ├── d1-schema.ts        # D1 schema definition & migration
+│   │   └── sync.ts             # Sync logic (push/pull/status/init)
 │   ├── scheduler/install.ts    # launchd/cron auto-installer
 │   └── skill/SKILL.md          # Claude Code skill definition
 ├── tests/
@@ -311,7 +339,9 @@ sincenety/
 │   ├── air.test.ts             # air command tests (7 cases)
 │   ├── circle.test.ts          # circle command tests (10 cases)
 │   ├── out.test.ts             # out command tests (28 cases)
-│   └── vacation.test.ts        # Vacation management tests (13 cases)
+│   ├── vacation.test.ts        # Vacation management tests (13 cases)
+│   ├── d1-client.test.ts       # D1 client tests
+│   └── sync.test.ts            # Sync tests
 ├── package.json
 └── tsconfig.json
 ```
@@ -350,6 +380,14 @@ sincenety/
                                   4 providers:
                                   Gmail MCP / Resend /
                                   Gmail SMTP / Custom SMTP
+                                        │
+                                        ▼
+                                  sincenety sync
+                                  (auto after out)
+                                        │
+                                        ▼
+                                  Cloudflare D1
+                                  (multi-machine aggregation)
                         │
                         ▼
                   Claude Code
@@ -390,7 +428,7 @@ Auto-migration: v1 → v2 → v3 → v4
 | DB | sql.js (WASM SQLite, zero native deps) |
 | Encryption | Node.js built-in crypto (AES-256-GCM) |
 | Email | nodemailer (Gmail SMTP) |
-| Tests | vitest (91 cases) |
+| Tests | vitest (108 cases) |
 
 ---
 
@@ -400,7 +438,7 @@ Auto-migration: v1 → v2 → v3 → v4
 npm install          # Install dependencies
 npm run build        # Compile TypeScript (dist/)
 npm run dev          # Run with tsx (dev mode)
-npm test             # Run vitest tests (91 cases)
+npm test             # Run vitest tests (108 cases)
 node dist/cli.js     # Direct execution
 ```
 
@@ -417,6 +455,7 @@ node dist/cli.js     # Direct execution
 - [x] `out` command — smart email delivery (out/outd/outw/outm, 4 providers, catchup)
 - [x] `config --setup` wizard
 - [x] Gmail MCP integration (zero-config email via `gmail_create_draft`)
+- [x] Cloud sync (Cloudflare D1 multi-machine aggregation)
 - [ ] Passphrase encryption option
 - [ ] Similar task matching (TF-IDF)
 - [ ] External DB connectors (MariaDB/PostgreSQL)
