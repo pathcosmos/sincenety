@@ -636,23 +636,42 @@ export class SqlJsAdapter implements StorageAdapter {
 
   async saveDailyReport(report: DailyReport): Promise<number> {
     this.ensureDb();
+    // ON CONFLICT upsert: emailed_at/email_to를 보존 (INSERT OR REPLACE는 DELETE+INSERT로 기존 값 유실)
     this.db!.run(
-      `INSERT OR REPLACE INTO daily_reports
+      `INSERT INTO daily_reports
        (report_date, report_type, period_from, period_to,
         session_count, total_messages, total_tokens,
         summary_json, overview, report_markdown, created_at,
-        status, progress_label, data_hash)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        status, progress_label, data_hash, emailed_at, email_to)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(report_date, report_type) DO UPDATE SET
+        period_from = excluded.period_from,
+        period_to = excluded.period_to,
+        session_count = excluded.session_count,
+        total_messages = excluded.total_messages,
+        total_tokens = excluded.total_tokens,
+        summary_json = excluded.summary_json,
+        overview = excluded.overview,
+        report_markdown = excluded.report_markdown,
+        created_at = excluded.created_at,
+        status = excluded.status,
+        progress_label = excluded.progress_label,
+        data_hash = excluded.data_hash`,
       [
         report.reportDate, report.reportType,
         report.periodFrom, report.periodTo,
         report.sessionCount, report.totalMessages, report.totalTokens,
         report.summaryJson, report.overview, report.reportMarkdown,
         report.createdAt,
-        report.status ?? null, report.progressLabel ?? null, report.dataHash ?? null,
+        report.status ?? "in_progress", report.progressLabel ?? null, report.dataHash ?? null,
+        report.emailedAt ?? null, report.emailTo ?? null,
       ]
     );
-    const idStmt = this.db!.prepare("SELECT last_insert_rowid() as id");
+    // upsert 후 정확한 ID 조회
+    const idStmt = this.db!.prepare(
+      "SELECT id FROM daily_reports WHERE report_date = ? AND report_type = ?"
+    );
+    idStmt.bind([report.reportDate, report.reportType]);
     idStmt.step();
     const id = (idStmt.getAsObject() as Record<string, unknown>).id as number;
     idStmt.free();
