@@ -47,7 +47,12 @@ $ sincenety circle
    - 자동 완료 처리: 자정→전날확정, 월요일→전주확정, 1일→전월확정
    - 변경 감지: data hash 비교로 토큰 절약
 
-3. **`sincenety out`** (Plan 2에서 구현 예정) — 스마트 이메일 발신
+3. **`sincenety out`** — 스마트 이메일 발신
+   - `out`: 일일보고 항상 발송, 금요일에 +주간보고, 월말에 +월간보고
+   - 미발송 캐치업: 금요일 놓치면 → 월요일에 주간보고 자동 발송
+   - 4가지 provider: Gmail MCP / Resend / Gmail SMTP / Custom SMTP
+   - `outd` / `outw` / `outm`: 일일 / 주간 / 월간 강제 발신
+   - `--preview`, `--render-only`, `--history`
 
 ### 소급 갈무리
 
@@ -167,6 +172,27 @@ sincenety schedule --status
 sincenety schedule --uninstall
 ```
 
+### out — 스마트 이메일 발신
+
+```bash
+# 스마트 발신 (요일 + 미발송 캐치업 자동 판단)
+sincenety out
+
+# 미리보기 (발송 안 함)
+sincenety out --preview
+
+# HTML JSON 출력 (Gmail MCP용)
+sincenety out --render-only
+
+# 발송 내역 조회
+sincenety out --history
+
+# 강제 발신
+sincenety outd    # 일일보고
+sincenety outw    # 주간보고
+sincenety outm    # 월간보고
+```
+
 ### Claude Code Skill (`/sincenety`)
 
 Claude Code 안에서 `/sincenety`로 직접 호출하여 AI 기반 일일보고를 생성합니다.
@@ -229,10 +255,11 @@ sincenety config --smtp-pass    # Gmail 앱 비밀번호 입력 프롬프트
 ```
 sincenety/
 ├── src/
-│   ├── cli.ts                  # CLI 진입점 (commander: air, circle, config, schedule)
+│   ├── cli.ts                  # CLI 진입점 (commander: air, circle, out, config, schedule)
 │   ├── core/
 │   │   ├── air.ts              # Phase 1: 날짜별 갈무리 (백필 + 해시)
 │   │   ├── circle.ts           # Phase 2: LLM 요약 파이프라인 (finalization + 저장)
+│   │   ├── out.ts              # Phase 3: 스마트 이메일 발신 (out/outd/outw/outm)
 │   │   ├── gatherer.ts         # 갈무리 핵심 로직 (파싱→그룹핑→저장)
 │   │   └── summarizer.ts       # AI 요약 (Claude API + 휴리스틱 fallback)
 │   ├── parser/
@@ -251,6 +278,9 @@ sincenety/
 │   │   └── markdown.ts         # 마크다운 리포트 생성
 │   ├── email/
 │   │   ├── sender.ts           # nodemailer 이메일 발송
+│   │   ├── renderer.ts         # HTML 이메일 렌더러 (보고서 → HTML)
+│   │   ├── resend.ts           # Resend API 이메일 provider
+│   │   ├── provider.ts         # 이메일 provider 추상화 (Gmail MCP/Resend/SMTP)
 │   │   └── template.ts         # Bright 컬러코딩 HTML 이메일 템플릿
 │   ├── scheduler/
 │   │   └── install.ts          # launchd/cron 자동 설치
@@ -259,7 +289,8 @@ sincenety/
 │   ├── encryption.test.ts      # 암호화 테스트 (26개)
 │   ├── migration-v4.test.ts    # DB v3→v4 마이그레이션 테스트 (7개)
 │   ├── air.test.ts             # air 명령 테스트 (7개)
-│   └── circle.test.ts          # circle 명령 테스트 (10개)
+│   ├── circle.test.ts          # circle 명령 테스트 (10개)
+│   └── out.test.ts             # out 명령 테스트 (28개)
 ├── package.json
 ├── tsconfig.json
 ├── CLAUDE.md
@@ -290,8 +321,16 @@ sincenety/
                                      │
                         ┌────────────┼────────────┐
                         ▼            ▼            ▼
-                  circle --json  circle --save  (out — Plan 2)
-                  (SKILL.md)    (daily_reports)  이메일 발송
+                  circle --json  circle --save  sincenety out
+                  (SKILL.md)    (daily_reports)  (스마트 발신)
+                                                      │
+                                        ┌─────────────┼─────────────┐
+                                        ▼             ▼             ▼
+                                    outd (일일)   outw (주간)   outm (월간)
+                                        │
+                                  4 providers:
+                                  Gmail MCP / Resend /
+                                  Gmail SMTP / Custom SMTP
                         │
                         ▼
                   Claude Code
@@ -336,7 +375,7 @@ DB 파일: `~/.sincenety/sincenety.db` (AES-256-GCM 암호화, 0600 권한)
 | DB | sql.js (WASM SQLite, native 의존성 없음) |
 | 암호화 | Node.js 내장 crypto (AES-256-GCM) |
 | 이메일 | nodemailer (Gmail SMTP) |
-| 테스트 | vitest (50개) |
+| 테스트 | vitest (78개) |
 
 ### 의존성 (최소)
 
@@ -364,14 +403,14 @@ devDependencies:
 npm install          # 의존성 설치
 npm run build        # TypeScript 컴파일 (dist/)
 npm run dev          # tsx로 개발 실행
-npm test             # vitest 테스트 (50개)
+npm test             # vitest 테스트 (78개)
 node dist/cli.js     # 직접 실행
 ```
 
 ### 테스트
 
 ```bash
-# 전체 테스트 (50개)
+# 전체 테스트 (78개)
 npm test
 
 # 개별 테스트
@@ -379,6 +418,7 @@ npx vitest run tests/encryption.test.ts   # 암호화 (26개)
 npx vitest run tests/migration-v4.test.ts # DB 마이그레이션 (7개)
 npx vitest run tests/air.test.ts          # air 명령 (7개)
 npx vitest run tests/circle.test.ts       # circle 명령 (10개)
+npx vitest run tests/out.test.ts          # out 명령 (28개)
 ```
 
 ### 로컬 npx 테스트
@@ -450,13 +490,28 @@ CLI를 7개 명령에서 3단계 파이프라인으로 전면 재구성:
 - **v3→v4 자동 마이그레이션**
 - **테스트 50개**: encryption 26 + migration-v4 7 + air 7 + circle 10
 
+### v0.3.1 (2026-04-07) — Plan 2: out/outd/outw/outm 스마트 발신
+
+- **`out` 명령**: 요일 기반 스마트 발신 (일일 항상, 금요일 +주간, 월말 +월간)
+- **미발송 캐치업**: 금요일 놓치면 월요일에 주간보고 자동 발송
+- **4가지 email provider**: Gmail MCP / Resend / Gmail SMTP / Custom SMTP
+- **`outd`/`outw`/`outm`**: 보고 타입별 강제 발신 명령
+- **`--preview`**: 발송 없이 미리보기
+- **`--render-only`**: HTML JSON 출력 (Gmail MCP 연동용)
+- **`--history`**: 발송 내역 조회
+- **`src/email/renderer.ts`**: HTML 이메일 렌더러
+- **`src/email/resend.ts`**: Resend API provider
+- **`src/email/provider.ts`**: provider 추상화 레이어
+- **`src/core/out.ts`**: out 명령 핵심 로직
+- **테스트 78개**: 기존 50 + out 28개 추가
+
 ### 향후 계획
 
 - [x] npm publish → `npx sincenety@latest` 배포
 - [x] 3단계 파이프라인 (air → circle → out)
 - [x] checkpoint 기반 백필 + 변경 감지
 - [x] 휴가 관리
-- [ ] `out` 명령 — 스마트 이메일 발신 (Plan 2)
+- [x] `out` 명령 — 스마트 이메일 발신 (out/outd/outw/outm, 4 providers, 캐치업)
 - [ ] `config --setup` 위저드 (Plan 3)
 - [ ] passphrase 설정 기능 완성
 - [ ] 유사 작업 매칭 (TF-IDF 기반)
@@ -470,8 +525,8 @@ CLI를 7개 명령에서 3단계 파이프라인으로 전면 재구성:
 | 지표 | 수치 |
 |------|------|
 | TypeScript 소스 파일 | 17개 |
-| 테스트 | 50/50 통과 |
-| CLI 명령어 | 4개 (air, circle, config, schedule) |
+| 테스트 | 78/78 통과 |
+| CLI 명령어 | 7개 (air, circle, out, outd, outw, outm, config, schedule) |
 | DB 테이블 | 7개 |
 | 의존성 (production) | 3개 (commander, nodemailer, sql.js) |
 

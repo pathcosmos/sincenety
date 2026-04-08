@@ -45,7 +45,12 @@ $ sincenety circle
    - Auto-finalization: midnight finalizes previous day, Monday finalizes previous week, 1st finalizes previous month
    - Change detection: data hash comparison saves tokens
 
-3. **`sincenety out`** (Plan 2) — Smart email delivery (coming soon)
+3. **`sincenety out`** — Smart email delivery
+   - `out`: daily always, +weekly on Friday, +monthly on month-end
+   - Unsent catchup: missed Friday → Monday auto-sends weekly
+   - 4 providers: Gmail MCP / Resend / Gmail SMTP / Custom SMTP
+   - `outd` / `outw` / `outm`: force daily / weekly / monthly
+   - `--preview`, `--render-only`, `--history`
 
 ### Retroactive Work Gathering
 
@@ -161,6 +166,27 @@ sincenety schedule --status            # Check status
 sincenety schedule --uninstall         # Remove
 ```
 
+### out — Smart Email Delivery
+
+```bash
+# Smart dispatch (daily always, +weekly on Friday, +monthly on month-end)
+sincenety out
+
+# Preview (no send)
+sincenety out --preview
+
+# HTML JSON output (for Gmail MCP)
+sincenety out --render-only
+
+# View send history
+sincenety out --history
+
+# Force send specific report type
+sincenety outd    # daily report
+sincenety outw    # weekly report
+sincenety outm    # monthly report
+```
+
 ### Claude Code Skill (`/sincenety`)
 
 Use `/sincenety` directly inside Claude Code sessions for AI-powered daily reports.
@@ -223,10 +249,11 @@ sincenety config --smtp-pass    # Prompts for Gmail app password
 ```
 sincenety/
 ├── src/
-│   ├── cli.ts                  # CLI entry (commander: air, circle, config, schedule)
+│   ├── cli.ts                  # CLI entry (commander: air, circle, out, config, schedule)
 │   ├── core/
 │   │   ├── air.ts              # Phase 1: date-based gathering (backfill + hash)
 │   │   ├── circle.ts           # Phase 2: LLM summary pipeline (finalization + save)
+│   │   ├── out.ts              # Phase 3: smart email dispatch (out/outd/outw/outm)
 │   │   ├── gatherer.ts         # Core gathering logic (parse → group → store)
 │   │   └── summarizer.ts       # Claude API summarization + heuristic fallback
 │   ├── parser/
@@ -244,6 +271,9 @@ sincenety/
 │   │   └── markdown.ts         # Markdown report generator
 │   ├── email/
 │   │   ├── sender.ts           # nodemailer email sender
+│   │   ├── renderer.ts         # HTML email renderer (report → HTML)
+│   │   ├── resend.ts           # Resend API email provider
+│   │   ├── provider.ts         # Email provider abstraction (Gmail MCP/Resend/SMTP)
 │   │   └── template.ts         # Bright color-coded HTML email template
 │   ├── scheduler/install.ts    # launchd/cron auto-installer
 │   └── skill/SKILL.md          # Claude Code skill definition
@@ -251,7 +281,8 @@ sincenety/
 │   ├── encryption.test.ts      # Encryption tests (26 cases)
 │   ├── migration-v4.test.ts    # DB v3→v4 migration tests (7 cases)
 │   ├── air.test.ts             # air command tests (7 cases)
-│   └── circle.test.ts          # circle command tests (10 cases)
+│   ├── circle.test.ts          # circle command tests (10 cases)
+│   └── out.test.ts             # out command tests (28 cases)
 ├── package.json
 └── tsconfig.json
 ```
@@ -280,8 +311,16 @@ sincenety/
                                      │
                         ┌────────────┼────────────┐
                         ▼            ▼            ▼
-                  circle --json  circle --save  (out — Plan 2)
-                  (SKILL.md)    (daily_reports)  email delivery
+                  circle --json  circle --save  sincenety out
+                  (SKILL.md)    (daily_reports)  (smart dispatch)
+                                                      │
+                                        ┌─────────────┼─────────────┐
+                                        ▼             ▼             ▼
+                                    outd (daily)  outw (weekly)  outm (monthly)
+                                        │
+                                  4 providers:
+                                  Gmail MCP / Resend /
+                                  Gmail SMTP / Custom SMTP
                         │
                         ▼
                   Claude Code
@@ -322,7 +361,7 @@ Auto-migration: v1 → v2 → v3 → v4
 | DB | sql.js (WASM SQLite, zero native deps) |
 | Encryption | Node.js built-in crypto (AES-256-GCM) |
 | Email | nodemailer (Gmail SMTP) |
-| Tests | vitest (50 cases) |
+| Tests | vitest (78 cases) |
 
 ---
 
@@ -332,7 +371,7 @@ Auto-migration: v1 → v2 → v3 → v4
 npm install          # Install dependencies
 npm run build        # Compile TypeScript (dist/)
 npm run dev          # Run with tsx (dev mode)
-npm test             # Run vitest tests (50 cases)
+npm test             # Run vitest tests (78 cases)
 node dist/cli.js     # Direct execution
 ```
 
@@ -346,7 +385,7 @@ node dist/cli.js     # Direct execution
 - [x] 3-phase pipeline (air → circle → out)
 - [x] Checkpoint-based backfill with change detection
 - [x] Vacation management
-- [ ] `out` command — smart email delivery (Plan 2)
+- [x] `out` command — smart email delivery (out/outd/outw/outm, 4 providers, catchup)
 - [ ] `config --setup` wizard (Plan 3)
 - [ ] Passphrase encryption option
 - [ ] Similar task matching (TF-IDF)
