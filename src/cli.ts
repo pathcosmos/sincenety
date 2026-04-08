@@ -512,9 +512,14 @@ program
         preview: options.preview,
         renderOnly: options.renderOnly,
       });
-      console.log(
-        `  ✅ out 완료 — ${result.sent}건 발송, ${result.skipped}건 스킵`,
-      );
+      const parts = [`${result.sent}건 발송`, `${result.skipped}건 스킵`];
+      if (result.errors > 0) parts.push(`${result.errors}건 오류`);
+      console.log(`  ✅ out 완료 — ${parts.join(", ")}`);
+      for (const e of result.entries) {
+        if (e.status === "error" && e.error) {
+          console.error(`  ⚠️  [${e.type}] ${e.error}`);
+        }
+      }
     } catch (err) {
       console.error(
         `  ❌ ${err instanceof Error ? err.message : String(err)}`,
@@ -546,9 +551,14 @@ for (const [cmd, type, desc] of [
           force: type,
           preview: options.preview,
         });
-        console.log(
-          `  ✅ ${cmd} 완료 — ${result.sent}건 발송, ${result.skipped}건 스킵`,
-        );
+        const parts = [`${result.sent}건 발송`, `${result.skipped}건 스킵`];
+        if (result.errors > 0) parts.push(`${result.errors}건 오류`);
+        console.log(`  ✅ ${cmd} 완료 — ${parts.join(", ")}`);
+        for (const e of result.entries) {
+          if (e.status === "error" && e.error) {
+            console.error(`  ⚠️  [${e.type}] ${e.error}`);
+          }
+        }
       } catch (err) {
         console.error(
           `  ❌ ${err instanceof Error ? err.message : String(err)}`,

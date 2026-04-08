@@ -237,6 +237,24 @@ export async function runAir(
   // 5. 체크포인트 저장
   await storage.saveCheckpoint(to);
 
+  // 6. D1 auto-sync (non-fatal)
+  if (changedDates.length > 0) {
+    try {
+      const { loadD1Client, pushToD1 } = await import("../cloud/sync.js");
+      const { ensureD1Schema } = await import("../cloud/d1-schema.js");
+      const { hostname } = await import("node:os");
+      const client = await loadD1Client(storage);
+      if (client) {
+        const machineId = await storage.getConfig("machine_id") ?? hostname();
+        await ensureD1Schema(client);
+        await pushToD1(storage, client, machineId);
+        console.log("  ☁️  D1 sync 완료");
+      }
+    } catch (err) {
+      console.warn(`  ⚠️  D1 sync 실패: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   // 백필 일수 계산
   const backfillDays = allDates.length;
 

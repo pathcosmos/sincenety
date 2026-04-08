@@ -636,7 +636,7 @@ export class SqlJsAdapter implements StorageAdapter {
 
   async saveDailyReport(report: DailyReport): Promise<number> {
     this.ensureDb();
-    // ON CONFLICT upsert: emailed_at/email_to를 보존 (INSERT OR REPLACE는 DELETE+INSERT로 기존 값 유실)
+    // ON CONFLICT upsert: emailed_at/email_to도 초기화하여 재정리 시 재발송 가능
     this.db!.run(
       `INSERT INTO daily_reports
        (report_date, report_type, period_from, period_to,
@@ -656,7 +656,9 @@ export class SqlJsAdapter implements StorageAdapter {
         created_at = excluded.created_at,
         status = excluded.status,
         progress_label = excluded.progress_label,
-        data_hash = excluded.data_hash`,
+        data_hash = excluded.data_hash,
+        emailed_at = NULL,
+        email_to = NULL`,
       [
         report.reportDate, report.reportType,
         report.periodFrom, report.periodTo,

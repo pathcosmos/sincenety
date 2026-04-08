@@ -58,8 +58,7 @@ CREATE TABLE IF NOT EXISTS gather_reports (
 
 const GATHER_REPORTS_UNIQUE_INDEX = `
 CREATE UNIQUE INDEX IF NOT EXISTS idx_gather_reports_machine_date
-  ON gather_reports(machine_id, report_date)
-  WHERE report_date IS NOT NULL;
+  ON gather_reports(machine_id, report_date);
 `;
 
 const DAILY_REPORTS_TABLE = `
@@ -181,7 +180,10 @@ export async function ensureD1Schema(client: D1Client): Promise<void> {
     await client.query(ddl);
   }
 
-  // 유니크 인덱스 (partial index)
+  // 유니크 인덱스 — partial index를 일반 unique index로 마이그레이션
+  try {
+    await client.query("DROP INDEX IF EXISTS idx_gather_reports_machine_date;");
+  } catch { /* 이미 없으면 무시 */ }
   await client.query(GATHER_REPORTS_UNIQUE_INDEX);
 
   // 일반 인덱스
