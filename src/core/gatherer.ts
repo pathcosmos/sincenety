@@ -25,7 +25,7 @@ export interface GatherResult {
   reportId?: number;
 }
 
-function sessionGroupToRecord(group: SessionGroup): SessionRecord {
+export function sessionGroupToRecord(group: SessionGroup): SessionRecord {
   return {
     id: group.sessionId,
     project: group.project,
