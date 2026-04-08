@@ -13,20 +13,33 @@ export interface D1AutoSetupResult {
 /**
  * Given a Cloudflare API token, auto-detect account and D1 database.
  * Creates "sincenety" database if not found.
+ * If knownAccountId is provided, skip /accounts lookup (useful when token lacks Account read permission).
  */
-export async function autoSetupD1(apiToken: string): Promise<D1AutoSetupResult> {
+export async function autoSetupD1(apiToken: string, knownAccountId?: string): Promise<D1AutoSetupResult> {
   // 1. Get account ID
-  const accountsRes = await fetch("https://api.cloudflare.com/client/v4/accounts?page=1&per_page=5", {
-    headers: { Authorization: `Bearer ${apiToken}`, "Content-Type": "application/json" },
-  });
-  if (!accountsRes.ok) throw new Error(`Cloudflare API 인증 실패 (${accountsRes.status})`);
-  const accountsJson = await accountsRes.json() as any;
-  if (!accountsJson.success || !accountsJson.result?.length) {
-    throw new Error("Cloudflare 계정을 찾을 수 없습니다");
+  let accountId: string;
+  let accountName: string;
+
+  if (knownAccountId) {
+    accountId = knownAccountId;
+    accountName = knownAccountId.slice(0, 8) + "...";
+  } else {
+    const accountsRes = await fetch("https://api.cloudflare.com/client/v4/accounts?page=1&per_page=5", {
+      headers: { Authorization: `Bearer ${apiToken}`, "Content-Type": "application/json" },
+    });
+    if (!accountsRes.ok) throw new Error(`Cloudflare API 인증 실패 (${accountsRes.status})`);
+    const accountsJson = await accountsRes.json() as any;
+    if (!accountsJson.success || !accountsJson.result?.length) {
+      throw new Error(
+        "Cloudflare 계정을 찾을 수 없습니다. 토큰에 Account 읽기 권한이 없을 수 있습니다.\n" +
+        "  → 해결: sincenety config --d1-account <ACCOUNT_ID> 로 먼저 설정 후 --d1-token 을 다시 시도하세요.\n" +
+        "  → Account ID는 Cloudflare 대시보드 URL에서 확인: dash.cloudflare.com/<ACCOUNT_ID>/..."
+      );
+    }
+    const account = accountsJson.result[0];
+    accountId = account.id;
+    accountName = account.name;
   }
-  const account = accountsJson.result[0];  // Use first account
-  const accountId = account.id;
-  const accountName = account.name;
 
   // 2. List D1 databases, look for "sincenety"
   const dbListRes = await fetch(

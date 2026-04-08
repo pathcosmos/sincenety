@@ -692,7 +692,8 @@ program
         console.log("  Cloudflare 계정 확인 중...");
         const { autoSetupD1 } = await import("./cloud/d1-auto-setup.js");
         try {
-          const result = await autoSetupD1(options.d1Token);
+          const existingAccountId = await storage.getConfig("d1_account_id");
+          const result = await autoSetupD1(options.d1Token, existingAccountId || undefined);
           await storage.setConfig("d1_api_token", options.d1Token);
           await storage.setConfig("d1_account_id", result.accountId);
           await storage.setConfig("d1_database_id", result.databaseId);
