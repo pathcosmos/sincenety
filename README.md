@@ -154,16 +154,32 @@ Multi-machine data aggregation via Cloudflare D1:
 - **Machine ID**: hardware-based auto-detection (see below), `config --machine-name` override for custom identification
 - **Zero new dependencies**: uses native `fetch` for D1 REST API — no extra packages added
 
+### Cloudflare API Token 발급
+
+1. **토큰 생성 페이지 접속**: [https://dash.cloudflare.com/profile/api-tokens](https://dash.cloudflare.com/profile/api-tokens)
+2. **"Create Token"** → **"Custom token"** (맨 아래 "Get started") 선택
+3. **권한 설정**:
+
+| Permission | Access |
+|-----------|--------|
+| Account / **D1** | **Edit** (DB 생성 + 읽기/쓰기) |
+| Account / **Workers AI** | **Read** (AI 모델 호출) |
+
+4. **Account Resources** → Include → 본인 계정 선택
+5. **"Create Token"** → 토큰 복사 (한 번만 표시됨!)
+
+> 이 토큰 하나로 D1 (중앙 DB) + Workers AI (요약 엔진) + sync (동기화) 전부 동작합니다.
+
 ### Token-Only D1 Setup
 
-A single D1 token is all you need. Everything else is auto-detected:
+A single token is all you need. Everything else is auto-detected:
 
 ```bash
 sincenety config --d1-token cfp_xxxxxxxx
 # ✅ Account auto-detected
 # ✅ D1 database auto-created/connected
 # ✅ machine_id auto-detected (hardware UUID-based)
-# ✅ Workers AI auto-enabled
+# ✅ Workers AI auto-enabled (Qwen3-30B)
 # ✅ Schema setup complete
 ```
 
