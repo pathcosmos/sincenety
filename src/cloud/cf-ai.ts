@@ -68,7 +68,7 @@ ${turnTexts}
             { role: "user", content: userPrompt },
           ],
           temperature: 0.3,
-          max_tokens: 600,
+          max_tokens: 2048,
         }),
       },
     );
@@ -130,7 +130,7 @@ export async function generateOverview(
             { role: "user", content: `${date} 작업 요약:\n${summaryText}\n\n위 내용을 2-3문장으로 종합하세요. 텍스트만 출력하세요.` },
           ],
           temperature: 0.3,
-          max_tokens: 200,
+          max_tokens: 1024,
         }),
       },
     );
