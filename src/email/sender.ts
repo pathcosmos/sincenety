@@ -5,6 +5,7 @@
 import { createTransport } from "nodemailer";
 import type { StorageAdapter } from "../storage/adapter.js";
 import { renderEmailHtml, type EmailData, type SessionData } from "./template.js";
+import type { RenderedEmail } from "./renderer.js";
 
 /** 이메일 설정을 storage에서 읽어옴 */
 async function getEmailConfig(storage: StorageAdapter) {
@@ -190,6 +191,32 @@ export async function sendGatherEmail(
 
   console.log(`  이메일 발송 완료: ${config.email}`);
   console.log(`  제목: ${subject}`);
+}
+
+/**
+ * RenderedEmail 객체를 SMTP로 발송
+ */
+export async function sendEmailViaSMTP(
+  storage: StorageAdapter,
+  rendered: RenderedEmail,
+): Promise<void> {
+  const config = await getEmailConfig(storage);
+  if (!config.smtpUser || !config.smtpPass) {
+    throw new Error("SMTP 설정이 필요합니다. sincenety config --setup");
+  }
+  const transporter = createTransport({
+    host: config.smtpHost,
+    port: config.smtpPort,
+    secure: config.smtpPort === 465,
+    auth: { user: config.smtpUser, pass: config.smtpPass },
+  });
+  await transporter.sendMail({
+    from: config.smtpUser,
+    to: rendered.recipient,
+    subject: rendered.subject,
+    text: rendered.text,
+    html: rendered.html,
+  });
 }
 
 /**
