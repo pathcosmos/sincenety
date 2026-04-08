@@ -77,6 +77,26 @@ $ sincenety circle
 
 Claude Code 세션 자체를 요약 엔진으로 활용합니다. `circle --json`으로 대화 턴 포함 구조화 데이터를 출력하면, SKILL.md가 Claude Code에게 직접 요약 생성을 지시합니다. 외부 API 키 없이도 동작하며, `ANTHROPIC_API_KEY`가 있으면 Claude API 요약도 가능합니다.
 
+### 휴가 관리
+
+- **Google Calendar 자동 감지** — SKILL.md가 Claude Code에게 Google Calendar 휴가 이벤트 확인 지시
+- **CLI 수동 등록** — `config --vacation 2026-04-10 2026-04-11`
+- **휴가 키워드** (한국어 + 영어): 휴가/vacation/연차/PTO/병가/sick/반차/half-day
+- **보고서 연동** — 휴가일에 [휴가] 라벨 표시, `out`은 휴가일 자동 스킵
+
+### 설정 위저드
+
+`sincenety config --setup`으로 대화형 3선택 위저드 실행:
+1. Gmail SMTP (앱 비밀번호 URL 안내 포함)
+2. Resend API
+3. Custom SMTP
+
+설정 완료 시 연결 테스트 자동 실행.
+
+### Gmail MCP 연동
+
+Claude Code 안에서 `gmail_create_draft` MCP 도구로 zero-config 이메일 발송. SMTP 자격증명 불필요 — Claude Code가 Gmail에 직접 초안 작성. `out --render-only`로 MCP 경로용 HTML 출력.
+
 ### 설정 관리
 
 `sincenety config`를 인자 없이 실행하면 ANSI 설정 상태 테이블을 표시합니다. 휴가 등록, 이메일 provider 선택 (Gmail/Resend/custom SMTP) 등을 지원합니다.
@@ -140,6 +160,9 @@ sincenety circle --save --type monthly < monthly_summary.json
 ### config — 설정 관리
 
 ```bash
+# 대화형 설정 위저드 (Gmail SMTP / Resend / Custom SMTP)
+sincenety config --setup
+
 # 현재 설정 상태 표시 (ANSI 테이블)
 sincenety config
 
@@ -282,6 +305,11 @@ sincenety/
 │   │   ├── resend.ts           # Resend API 이메일 provider
 │   │   ├── provider.ts         # 이메일 provider 추상화 (Gmail MCP/Resend/SMTP)
 │   │   └── template.ts         # Bright 컬러코딩 HTML 이메일 템플릿
+│   ├── vacation/
+│   │   ├── manager.ts          # 휴가 CRUD (등록/조회/삭제/확인)
+│   │   └── detector.ts         # 휴가 키워드 감지 (한국어+영어)
+│   ├── config/
+│   │   └── setup-wizard.ts     # 대화형 3선택 설정 위저드
 │   ├── scheduler/
 │   │   └── install.ts          # launchd/cron 자동 설치
 │   └── skill/SKILL.md          # Claude Code skill 정의
@@ -290,7 +318,8 @@ sincenety/
 │   ├── migration-v4.test.ts    # DB v3→v4 마이그레이션 테스트 (7개)
 │   ├── air.test.ts             # air 명령 테스트 (7개)
 │   ├── circle.test.ts          # circle 명령 테스트 (10개)
-│   └── out.test.ts             # out 명령 테스트 (28개)
+│   ├── out.test.ts             # out 명령 테스트 (28개)
+│   └── vacation.test.ts        # 휴가 관리 테스트 (13개)
 ├── package.json
 ├── tsconfig.json
 ├── CLAUDE.md
@@ -375,7 +404,7 @@ DB 파일: `~/.sincenety/sincenety.db` (AES-256-GCM 암호화, 0600 권한)
 | DB | sql.js (WASM SQLite, native 의존성 없음) |
 | 암호화 | Node.js 내장 crypto (AES-256-GCM) |
 | 이메일 | nodemailer (Gmail SMTP) |
-| 테스트 | vitest (78개) |
+| 테스트 | vitest (91개) |
 
 ### 의존성 (최소)
 
@@ -403,14 +432,14 @@ devDependencies:
 npm install          # 의존성 설치
 npm run build        # TypeScript 컴파일 (dist/)
 npm run dev          # tsx로 개발 실행
-npm test             # vitest 테스트 (78개)
+npm test             # vitest 테스트 (91개)
 node dist/cli.js     # 직접 실행
 ```
 
 ### 테스트
 
 ```bash
-# 전체 테스트 (78개)
+# 전체 테스트 (91개)
 npm test
 
 # 개별 테스트
@@ -505,6 +534,18 @@ CLI를 7개 명령에서 3단계 파이프라인으로 전면 재구성:
 - **`src/core/out.ts`**: out 명령 핵심 로직
 - **테스트 78개**: 기존 50 + out 28개 추가
 
+### v0.3.2 (2026-04-07) — Plan 3: 휴가 관리, 설정 위저드, Gmail MCP
+
+- **휴가 관리**: Google Calendar 자동 감지 (SKILL.md), CLI 수동 등록 (`config --vacation`)
+- **휴가 키워드 감지**: 한국어+영어 (휴가/vacation/연차/PTO/병가/sick/반차/half-day)
+- **보고서 휴가 연동**: [휴가] 라벨 표시, `out` 휴가일 자동 스킵
+- **`config --setup` 위저드**: 대화형 3선택 (Gmail SMTP / Resend / Custom SMTP), 연결 테스트
+- **Gmail MCP 연동**: `gmail_create_draft`로 zero-config 이메일, `out --render-only` MCP 경로
+- **`src/vacation/manager.ts`**: 휴가 CRUD (등록/조회/삭제/확인)
+- **`src/vacation/detector.ts`**: 휴가 키워드 감지
+- **`src/config/setup-wizard.ts`**: 대화형 설정 위저드
+- **테스트 91개**: 기존 78 + vacation 13개 추가
+
 ### 향후 계획
 
 - [x] npm publish → `npx sincenety@latest` 배포
@@ -512,7 +553,8 @@ CLI를 7개 명령에서 3단계 파이프라인으로 전면 재구성:
 - [x] checkpoint 기반 백필 + 변경 감지
 - [x] 휴가 관리
 - [x] `out` 명령 — 스마트 이메일 발신 (out/outd/outw/outm, 4 providers, 캐치업)
-- [ ] `config --setup` 위저드 (Plan 3)
+- [x] `config --setup` 위저드
+- [x] Gmail MCP 연동 (zero-config 이메일, `gmail_create_draft`)
 - [ ] passphrase 설정 기능 완성
 - [ ] 유사 작업 매칭 (TF-IDF 기반)
 - [ ] MariaDB/PostgreSQL 외부 DB 연결
@@ -525,7 +567,7 @@ CLI를 7개 명령에서 3단계 파이프라인으로 전면 재구성:
 | 지표 | 수치 |
 |------|------|
 | TypeScript 소스 파일 | 17개 |
-| 테스트 | 78/78 통과 |
+| 테스트 | 91/91 통과 |
 | CLI 명령어 | 7개 (air, circle, out, outd, outw, outm, config, schedule) |
 | DB 테이블 | 7개 |
 | 의존성 (production) | 3개 (commander, nodemailer, sql.js) |

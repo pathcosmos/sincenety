@@ -76,6 +76,26 @@ Generate summaries powered by Claude Code itself — no external API key needed.
 
 When `ANTHROPIC_API_KEY` is set, the `summarizer.ts` module can also call the Claude API directly.
 
+### Vacation Management
+
+- **Google Calendar auto-detection** — SKILL.md instructs Claude Code to check Google Calendar for vacation events
+- **CLI manual registration** — `config --vacation 2026-04-10 2026-04-11`
+- **Vacation keywords** (Korean + English): 휴가/vacation/연차/PTO/병가/sick/반차/half-day
+- **Report integration** — vacation days get a [휴가] label; `out` skips vacation days automatically
+
+### Config Setup Wizard
+
+Run `sincenety config --setup` for an interactive 3-choice wizard:
+1. Gmail SMTP (with app password URL guidance)
+2. Resend API
+3. Custom SMTP
+
+Connection test runs automatically on setup completion.
+
+### Gmail MCP Integration
+
+Zero-config email delivery inside Claude Code via `gmail_create_draft` MCP tool. No SMTP credentials needed — Claude Code drafts the email directly in Gmail. Use `out --render-only` to get HTML output for the MCP path.
+
 ### Config Management
 
 Run `sincenety config` with no arguments to see a formatted settings status table. Supports vacation registration, email provider selection (Gmail/Resend/custom SMTP), and more.
@@ -139,6 +159,9 @@ sincenety circle --save --type monthly < monthly_summary.json
 ### config — Settings Management
 
 ```bash
+# Interactive setup wizard (Gmail SMTP / Resend / Custom SMTP)
+sincenety config --setup
+
 # Show current settings (ANSI table)
 sincenety config
 
@@ -275,6 +298,11 @@ sincenety/
 │   │   ├── resend.ts           # Resend API email provider
 │   │   ├── provider.ts         # Email provider abstraction (Gmail MCP/Resend/SMTP)
 │   │   └── template.ts         # Bright color-coded HTML email template
+│   ├── vacation/
+│   │   ├── manager.ts          # Vacation CRUD (register/list/clear/check)
+│   │   └── detector.ts         # Vacation keyword detection (KO+EN)
+│   ├── config/
+│   │   └── setup-wizard.ts     # Interactive 3-choice setup wizard
 │   ├── scheduler/install.ts    # launchd/cron auto-installer
 │   └── skill/SKILL.md          # Claude Code skill definition
 ├── tests/
@@ -282,7 +310,8 @@ sincenety/
 │   ├── migration-v4.test.ts    # DB v3→v4 migration tests (7 cases)
 │   ├── air.test.ts             # air command tests (7 cases)
 │   ├── circle.test.ts          # circle command tests (10 cases)
-│   └── out.test.ts             # out command tests (28 cases)
+│   ├── out.test.ts             # out command tests (28 cases)
+│   └── vacation.test.ts        # Vacation management tests (13 cases)
 ├── package.json
 └── tsconfig.json
 ```
@@ -361,7 +390,7 @@ Auto-migration: v1 → v2 → v3 → v4
 | DB | sql.js (WASM SQLite, zero native deps) |
 | Encryption | Node.js built-in crypto (AES-256-GCM) |
 | Email | nodemailer (Gmail SMTP) |
-| Tests | vitest (78 cases) |
+| Tests | vitest (91 cases) |
 
 ---
 
@@ -371,7 +400,7 @@ Auto-migration: v1 → v2 → v3 → v4
 npm install          # Install dependencies
 npm run build        # Compile TypeScript (dist/)
 npm run dev          # Run with tsx (dev mode)
-npm test             # Run vitest tests (78 cases)
+npm test             # Run vitest tests (91 cases)
 node dist/cli.js     # Direct execution
 ```
 
@@ -386,7 +415,8 @@ node dist/cli.js     # Direct execution
 - [x] Checkpoint-based backfill with change detection
 - [x] Vacation management
 - [x] `out` command — smart email delivery (out/outd/outw/outm, 4 providers, catchup)
-- [ ] `config --setup` wizard (Plan 3)
+- [x] `config --setup` wizard
+- [x] Gmail MCP integration (zero-config email via `gmail_create_draft`)
 - [ ] Passphrase encryption option
 - [ ] Similar task matching (TF-IDF)
 - [ ] External DB connectors (MariaDB/PostgreSQL)
