@@ -119,7 +119,7 @@ async function showConfigStatus(storage: StorageAdapter): Promise<void> {
   console.log("  " + hLine("└", "┴", "┘"));
 
   // D1 section
-  const { hostname } = await import("node:os");
+  const { getMachineId } = await import("./util/machine-id.js");
   const d1Keys = [
     { key: "d1_account_id", label: "d1_account_id" },
     { key: "d1_database_id", label: "d1_database_id" },
@@ -143,8 +143,8 @@ async function showConfigStatus(storage: StorageAdapter): Promise<void> {
       }
       status = "✅ 설정됨";
     } else if (k.key === "machine_id") {
-      displayVal = hostname();
-      status = "✅ 기본값";
+      displayVal = getMachineId();
+      status = "✅ 자동감지";
     } else {
       displayVal = "(미설정)";
       status = "─";
@@ -689,9 +689,34 @@ program
       }
       if (options.d1Token) {
         hasAction = true;
-        await storage.setConfig("d1_api_token", options.d1Token);
-        console.log(`  d1_api_token = ********`);
-        changed = true;
+        console.log("  Cloudflare 계정 확인 중...");
+        const { autoSetupD1 } = await import("./cloud/d1-auto-setup.js");
+        try {
+          const result = await autoSetupD1(options.d1Token);
+          await storage.setConfig("d1_api_token", options.d1Token);
+          await storage.setConfig("d1_account_id", result.accountId);
+          await storage.setConfig("d1_database_id", result.databaseId);
+          console.log(`  ✅ 계정: ${result.accountName} (${result.accountId.slice(0, 8)}...)`);
+          if (result.created) {
+            console.log(`  ✅ 'sincenety' DB 생성 (${result.databaseId.slice(0, 8)}...)`);
+          } else {
+            console.log(`  ✅ 'sincenety' DB 발견 (${result.databaseId.slice(0, 8)}...)`);
+          }
+          // Auto machine ID
+          const { getMachineId } = await import("./util/machine-id.js");
+          const mid = getMachineId();
+          await storage.setConfig("machine_id", mid);
+          console.log(`  ✅ machine_id: ${mid}`);
+          // Schema setup
+          const { D1Client } = await import("./cloud/d1-client.js");
+          const client = new D1Client(result.accountId, result.databaseId, options.d1Token);
+          const { ensureD1Schema } = await import("./cloud/d1-schema.js");
+          await ensureD1Schema(client);
+          console.log("  ✅ D1 스키마 세팅 완료!");
+          changed = true;
+        } catch (err) {
+          console.error(`  ❌ D1 설정 실패: ${err instanceof Error ? err.message : String(err)}`);
+        }
       }
       if (options.machineName) {
         hasAction = true;
@@ -701,7 +726,8 @@ program
       }
       if (options.setupD1) {
         hasAction = true;
-        console.log("  D1 설정 위저드는 향후 구현 예정입니다. 개별 옵션을 사용해 주세요.");
+        console.log("  D1 설정: sincenety config --d1-token <API_TOKEN>");
+        console.log("  토큰만으로 계정/DB/머신 자동 감지됩니다.");
         return;
       }
 
@@ -765,20 +791,18 @@ program
     try {
       await storage.initialize();
 
-      const { loadD1Client, pushToD1, pullConfigFromD1, getSyncStatus } = await import("./cloud/sync.js");
+      const { loadD1Client, pushToD1, pullConfigFromD1, getSyncStatus, getAutoMachineId } = await import("./cloud/sync.js");
       const { ensureD1Schema } = await import("./cloud/d1-schema.js");
-      const { hostname } = await import("node:os");
 
       const client = await loadD1Client(storage);
       if (!client) {
         console.log("  D1 설정이 필요합니다:");
-        console.log("    sincenety config --d1-account <ACCOUNT_ID>");
-        console.log("    sincenety config --d1-database <DATABASE_ID>");
         console.log("    sincenety config --d1-token <API_TOKEN>");
+        console.log("  (토큰만으로 계정/DB 자동 감지)");
         return;
       }
 
-      const machineId = await storage.getConfig("machine_id") ?? hostname();
+      const machineId = await getAutoMachineId(storage);
 
       if (options.init) {
         console.log("  D1 스키마 생성 중...");
@@ -796,7 +820,23 @@ program
         console.log(`  │ 마지막 sync    │ ${status.lastSync ? new Date(status.lastSync).toLocaleString("ko-KR") : "(없음)"}${"".padEnd(Math.max(0, 20 - (status.lastSync ? new Date(status.lastSync).toLocaleString("ko-KR").length : 4)))} │`);
         console.log(`  │ 미동기화       │ ~${status.pendingRows}건${"".padEnd(17)} │`);
         console.log(`  │ machine_id     │ ${machineId.padEnd(20)} │`);
-        console.log("  └────────────────┴──────────────────────┘\n");
+        console.log("  └────────────────┴──────────────────────┘");
+
+        // Show registered machines
+        try {
+          const machinesRes = await client.query<{machine_id: string; platform: string; label: string; last_sync_at: number}>(
+            "SELECT machine_id, platform, label, last_sync_at FROM machines ORDER BY last_sync_at DESC"
+          );
+          if (machinesRes.results.length > 0) {
+            console.log("\n  등록된 머신:");
+            for (const m of machinesRes.results) {
+              const lastSync = m.last_sync_at ? new Date(m.last_sync_at).toLocaleString("ko-KR") : "(없음)";
+              const label = m.label ? ` (${m.label})` : "";
+              console.log(`    ${m.machine_id}${label} — ${m.platform} — ${lastSync}`);
+            }
+          }
+        } catch { /* ignore if machines table not yet created */ }
+        console.log("");
         return;
       }
 

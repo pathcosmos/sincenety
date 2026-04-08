@@ -119,6 +119,17 @@ CREATE TABLE IF NOT EXISTS vacations (
 );
 `;
 
+const MACHINES_TABLE = `
+CREATE TABLE IF NOT EXISTS machines (
+  machine_id TEXT PRIMARY KEY,
+  platform TEXT NOT NULL,
+  hostname TEXT,
+  label TEXT,
+  first_seen_at INTEGER NOT NULL,
+  last_sync_at INTEGER
+);
+`;
+
 const SHARED_CONFIG_TABLE = `
 CREATE TABLE IF NOT EXISTS shared_config (
   key TEXT PRIMARY KEY,
@@ -161,6 +172,7 @@ export async function ensureD1Schema(client: D1Client): Promise<void> {
     DAILY_REPORTS_TABLE,
     EMAIL_LOGS_TABLE,
     VACATIONS_TABLE,
+    MACHINES_TABLE,
     SHARED_CONFIG_TABLE,
     SYNC_META_TABLE,
   ];

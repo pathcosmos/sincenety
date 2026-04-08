@@ -5,8 +5,10 @@
  * pull: D1 shared_config → 로컬 config
  */
 
+import { platform, hostname } from "node:os";
 import type { D1Client } from "./d1-client.js";
 import { ensureD1Schema } from "./d1-schema.js";
+import { getMachineId } from "../util/machine-id.js";
 import type {
   StorageAdapter,
   SessionRecord,
@@ -76,6 +78,20 @@ export async function loadD1Client(
 }
 
 /**
+ * Auto machine ID: config에 저장된 값 우선, 없으면 자동 감지 후 저장
+ */
+export async function getAutoMachineId(
+  storage: StorageAdapter,
+): Promise<string> {
+  const existing = await storage.getConfig("machine_id");
+  if (existing) return existing;
+
+  const mid = getMachineId();
+  await storage.setConfig("machine_id", mid);
+  return mid;
+}
+
+/**
  * 로컬 DB → D1 incremental push
  *
  * last_d1_sync 이후의 데이터만 전송 (최초 실행 시 전체)
@@ -109,6 +125,21 @@ export async function pushToD1(
   } catch (err) {
     result.errors.push(`스키마 생성 실패: ${(err as Error).message}`);
     return result;
+  }
+
+  // 2.5. Upsert machine record
+  try {
+    const label = await storage.getConfig("machine_label") ?? null;
+    await client.query(
+      `INSERT INTO machines (machine_id, platform, hostname, label, first_seen_at, last_sync_at)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(machine_id) DO UPDATE SET
+         hostname = excluded.hostname,
+         last_sync_at = excluded.last_sync_at`,
+      [machineId, platform(), hostname(), label, now, now],
+    );
+  } catch (err) {
+    result.errors.push(`머신 등록 실패: ${(err as Error).message}`);
   }
 
   // 3. Push sessions
