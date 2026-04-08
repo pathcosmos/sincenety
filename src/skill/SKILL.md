@@ -86,9 +86,13 @@ echo '{ "date": "YYYY-MM-DD", "overview": "주간 종합", "sessions": [...] }' 
 ### 5단계: 이메일 발송 (설정된 경우)
 
 발송 경로 자동 판단:
-1. Gmail MCP 사용 가능? → `gmail_get_profile` 확인 후 `gmail_create_draft`로 발송
-2. SMTP 설정됨? → 기존 `sincenety email` sender 모듈로 발송 (v0.3.1에서 `out` 명령으로 전환 예정)
+1. Gmail MCP 사용 가능? → `gmail_get_profile` 확인 후 `sincenety out --render-only`로 HTML 획득 → `gmail_create_draft`로 발송
+2. SMTP/Resend 설정됨? → `sincenety out`으로 발송 (요일 기준 일일/주간/월간 자동 판단)
 3. 설정 없음? → 터미널 출력만 (이메일 스킵)
+
+```bash
+sincenety out
+```
 
 ## 워크플로우: 주간/월간 보고 생성
 
