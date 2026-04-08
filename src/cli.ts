@@ -512,9 +512,11 @@ program
         preview: options.preview,
         renderOnly: options.renderOnly,
       });
-      const parts = [`${result.sent}건 발송`, `${result.skipped}건 스킵`];
-      if (result.errors > 0) parts.push(`${result.errors}건 오류`);
-      console.log(`  ✅ out 완료 — ${parts.join(", ")}`);
+      if (!options.renderOnly) {
+        const parts = [`${result.sent}건 발송`, `${result.skipped}건 스킵`];
+        if (result.errors > 0) parts.push(`${result.errors}건 오류`);
+        console.log(`  ✅ out 완료 — ${parts.join(", ")}`);
+      }
       for (const e of result.entries) {
         if (e.status === "error" && e.error) {
           console.error(`  ⚠️  [${e.type}] ${e.error}`);

@@ -247,7 +247,7 @@ export async function runAir(
       const machineId = await storage.getConfig("machine_id") ?? hostname();
       await ensureD1Schema(client);
       await pushToD1(storage, client, machineId);
-      console.log("  ☁️  D1 sync 완료");
+      console.error("  ☁️  D1 sync 완료");
     }
   } catch (err) {
     console.warn(`  ⚠️  D1 sync 실패: ${err instanceof Error ? err.message : String(err)}`);

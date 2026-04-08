@@ -97,6 +97,7 @@ Unified AI provider system with configurable routing:
 # AI provider 설정 (Claude Code 환경에서의 동작 제어)
 sincenety config --ai-provider cloudflare   # Workers AI 사용
 sincenety config --ai-provider anthropic    # Claude API 사용
+sincenety config --ai-provider claude-code  # Claude Code 직접 요약
 sincenety config --ai-provider auto         # 자동 감지 (기본값)
 
 # 현재 설정 확인
@@ -344,6 +345,7 @@ sincenety config --resend-key rk_...
 # AI provider (Claude Code 환경 제어)
 sincenety config --ai-provider cloudflare   # Workers AI
 sincenety config --ai-provider anthropic    # Claude API
+sincenety config --ai-provider claude-code  # Claude Code 직접 요약
 sincenety config --ai-provider auto         # Auto-detect (default)
 
 # Vacation management
@@ -634,6 +636,7 @@ node dist/cli.js     # Direct execution
 - [x] Token-only D1 setup (account/database auto-detection)
 - [x] Unified AI provider routing (cloudflare/anthropic/claude-code/heuristic)
 - [x] Mandatory setup guard (D1 + SMTP required before any command)
+- [x] Clean JSON output: `--render-only` stdout/stderr separation, single JSON output
 - [ ] Passphrase encryption option
 - [ ] Similar task matching (TF-IDF)
 - [ ] External DB connectors (MariaDB/PostgreSQL)

@@ -100,6 +100,7 @@ $ sincenety circle
 # AI provider 설정 (Claude Code 환경에서의 동작 제어)
 sincenety config --ai-provider cloudflare   # Workers AI 사용
 sincenety config --ai-provider anthropic    # Claude API 사용
+sincenety config --ai-provider claude-code  # Claude Code 직접 요약
 sincenety config --ai-provider auto         # 자동 감지 (기본값)
 ```
 
@@ -773,6 +774,13 @@ CLI를 7개 명령에서 3단계 파이프라인으로 전면 재구성:
 - **`src/util/machine-id.ts`**: 크로스플랫폼 하드웨어 ID 감지
 - **테스트 116개**: 기존 108 + cf-ai/machine-id 8개 추가
 
+### v0.6.5 (2026-04-08) — JSON 출력 정합성 수정
+
+- **`--render-only` stdout/stderr 분리**: D1 sync 완료 메시지를 `console.error`로 변경하여 JSON stdout 오염 방지
+- **`--render-only` 단일 JSON 출력**: 다중 보고서 타입(daily+weekly 등) 렌더링 시 개별 JSON → 단일 JSON 객체/배열로 통합
+- **`--render-only` 완료 메시지 제거**: `✅ out 완료` 메시지가 JSON stdout에 섞이던 문제 수정
+- **`claude-code` AI provider 옵션 문서화**: `sincenety config --ai-provider claude-code` 옵션을 README에 반영
+
 ### 향후 계획
 
 - [x] npm publish → `npx sincenety@latest` 배포
@@ -788,6 +796,7 @@ CLI를 7개 명령에서 3단계 파이프라인으로 전면 재구성:
 - [x] Token-only D1 setup (계정/DB 자동 감지)
 - [x] 통합 AI provider 라우팅 (cloudflare/anthropic/claude-code/heuristic)
 - [x] 필수 설정 가드 (D1 + SMTP 미설정 시 커맨드 차단)
+- [x] JSON 출력 정합성: `--render-only` stdout/stderr 분리, 단일 JSON 출력
 - [ ] passphrase 설정 기능 완성
 - [ ] 유사 작업 매칭 (TF-IDF 기반)
 - [ ] MariaDB/PostgreSQL 외부 DB 연결

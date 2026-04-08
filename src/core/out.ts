@@ -179,6 +179,8 @@ export async function runOut(
   }
 
   // 3. 각 유형별 렌더링 → 발송
+  const renderOnlyResults: RenderedEmail[] = [];
+
   for (const type of reportTypes) {
     const reportType = type as "daily" | "weekly" | "monthly";
     const dateKey = getReportDateKey(reportType, today);
@@ -199,9 +201,9 @@ export async function runOut(
       continue;
     }
 
-    // renderOnly → JSON stdout
+    // renderOnly → 결과 수집 (루프 종료 후 단일 JSON 출력)
     if (options?.renderOnly) {
-      process.stdout.write(JSON.stringify(rendered, null, 2) + "\n");
+      renderOnlyResults.push(rendered);
       result.entries.push({ type: reportType, dateKey, status: "rendered" });
       continue;
     }
@@ -237,6 +239,12 @@ export async function runOut(
     }
   }
 
+  // renderOnly → 단일 JSON 출력 (1개면 객체, 여러 개면 배열)
+  if (options?.renderOnly && renderOnlyResults.length > 0) {
+    const output = renderOnlyResults.length === 1 ? renderOnlyResults[0] : renderOnlyResults;
+    process.stdout.write(JSON.stringify(output, null, 2) + "\n");
+  }
+
   // D1 auto-sync (non-fatal)
   if (!options?.preview && !options?.renderOnly) {
     try {
@@ -248,7 +256,7 @@ export async function runOut(
         const machineId = await storage.getConfig("machine_id") ?? hostname();
         await ensureD1Schema(client);
         await pushToD1(storage, client, machineId);
-        console.log("  ☁️  D1 sync 완료");
+        console.error("  ☁️  D1 sync 완료");
       }
     } catch (err) {
       console.warn(`  ⚠️  D1 sync 실패: ${err instanceof Error ? err.message : String(err)}`);
