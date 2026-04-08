@@ -29,7 +29,7 @@ $ sincenety circle
 
 ### 3-Phase Pipeline: air → circle → out
 
-**v0.4.0** structures the CLI into a clear pipeline:
+**v0.5.0** structures the CLI into a clear pipeline:
 
 1. **`sincenety air`** (환기) — Collect and store work records by date
    - Date-based grouping (midnight boundary, startedAt-based)
@@ -54,7 +54,7 @@ $ sincenety circle
    - `outd` / `outw` / `outm`: force daily / weekly / monthly
    - `--preview`, `--render-only`, `--history`
 
-### CLI Commands
+### CLI Commands (9)
 
 | Command | Description |
 |---------|-------------|
@@ -84,11 +84,24 @@ No need to remember to start/stop tracking. `sincenety` parses `~/.claude/` data
 | Model | Extracted from assistant responses |
 | Category | Auto-classified from project path |
 
-### AI-Powered Summaries
+### AI Summarization Engine
 
-Generate summaries powered by Claude Code itself — no external API key needed. The `circle --json` command outputs structured data, and the Claude Code skill (SKILL.md) instructs the session to generate summaries directly. Summaries are saved to `daily_reports` with daily, weekly, or monthly types.
+Automatic AI-powered summaries with a 4-tier priority system:
 
-When `ANTHROPIC_API_KEY` is set, the `summarizer.ts` module can also call the Claude API directly.
+```
+1. Claude Code (SKILL.md) → Claude Code summarizes directly (best quality)
+2. D1 token present     → Cloudflare Workers AI (Qwen3-30B) automatic
+3. ANTHROPIC_API_KEY     → Claude API
+4. None                  → Heuristic fallback
+```
+
+- **Cloudflare Workers AI (Qwen3-30B)** for Korean text summarization
+- D1 token only needed — no separate API key required
+- `circle` auto-summarizes: per-session topic/outcome/flow/significance + daily overview
+- Free tier: 10,000 neurons/day (sufficient for personal use, ~300 summaries/day)
+- Monthly cost ~$0.02 (effectively free)
+
+When running inside Claude Code, the SKILL.md integration provides the highest quality summaries. Outside Claude Code, if a D1 token is configured, Workers AI kicks in automatically.
 
 ### Email AI Summary Integration
 
@@ -138,8 +151,36 @@ Multi-machine data aggregation via Cloudflare D1:
 - **`sincenety sync`** pushes local data to a central D1 database (push / pull-config / status / init)
 - **Auto-sync** after `out` completes (non-fatal — network errors don't block email delivery)
 - **Shared config**: SMTP settings set once, `sync --pull-config` on new machines to pull shared config
-- **Machine ID**: hostname by default, `config --machine-name` override for custom identification
+- **Machine ID**: hardware-based auto-detection (see below), `config --machine-name` override for custom identification
 - **Zero new dependencies**: uses native `fetch` for D1 REST API — no extra packages added
+
+### Token-Only D1 Setup
+
+A single D1 token is all you need. Everything else is auto-detected:
+
+```bash
+sincenety config --d1-token cfp_xxxxxxxx
+# ✅ Account auto-detected
+# ✅ D1 database auto-created/connected
+# ✅ machine_id auto-detected (hardware UUID-based)
+# ✅ Workers AI auto-enabled
+# ✅ Schema setup complete
+```
+
+### Auto Machine ID
+
+Hardware-based machine identification — zero configuration needed:
+
+| Platform | Source | Characteristics |
+|----------|--------|-----------------|
+| macOS | IOPlatformUUID | Hardware-unique, survives OS reinstall |
+| Linux | /etc/machine-id | OS-unique |
+| Windows | MachineGuid | Install-unique |
+
+- **Format**: `mac_a1b2c3d4_username`
+- Auto-detected with no user action required
+- Same machine always produces the same ID
+- Used for D1 sync machine registry (`machines` table)
 
 ### Encrypted Storage
 
@@ -323,7 +364,7 @@ sincenety config --smtp-pass    # Prompts for Gmail app password
 ```
 sincenety/
 ├── src/
-│   ├── cli.ts                  # CLI entry (commander: air, circle, out, sync, config, schedule)
+│   ├── cli.ts                  # CLI entry (commander: air, circle, out, sync, config, schedule — 9 commands)
 │   ├── core/
 │   │   ├── air.ts              # Phase 1: date-based gathering (backfill + hash)
 │   │   ├── circle.ts           # Phase 2: LLM summary pipeline (finalization + save)
@@ -357,7 +398,11 @@ sincenety/
 │   ├── cloud/
 │   │   ├── d1-client.ts        # Cloudflare D1 REST API client
 │   │   ├── d1-schema.ts        # D1 schema definition & migration
+│   │   ├── d1-auto-setup.ts    # Token-only auto-setup (account/DB detection)
+│   │   ├── cf-ai.ts            # Cloudflare Workers AI client (Qwen3-30B)
 │   │   └── sync.ts             # Sync logic (push/pull/status/init)
+│   ├── util/
+│   │   └── machine-id.ts       # Cross-platform hardware ID detection
 │   ├── scheduler/install.ts    # launchd/cron auto-installer
 │   └── skill/SKILL.md          # Claude Code skill definition
 ├── tests/
@@ -368,7 +413,9 @@ sincenety/
 │   ├── out.test.ts             # out command tests (28 cases)
 │   ├── vacation.test.ts        # Vacation management tests (13 cases)
 │   ├── d1-client.test.ts       # D1 client tests
-│   └── sync.test.ts            # Sync tests
+│   ├── sync.test.ts            # Sync tests
+│   ├── cf-ai.test.ts           # Cloudflare Workers AI tests
+│   └── machine-id.test.ts      # Machine ID detection tests
 ├── package.json
 └── tsconfig.json
 ```
@@ -456,7 +503,8 @@ Auto-migration: v1 → v2 → v3 → v4
 | Encryption | Node.js built-in crypto (AES-256-GCM) |
 | Email | nodemailer (Gmail SMTP), Resend API |
 | Cloud | Cloudflare D1 REST API (native fetch, zero extra deps) |
-| Tests | vitest (108 cases across 9 test files) |
+| AI Summarization | Cloudflare Workers AI (Qwen3-30B), zero extra deps |
+| Tests | vitest (116 cases across 11 test files) |
 
 ---
 
@@ -466,7 +514,7 @@ Auto-migration: v1 → v2 → v3 → v4
 npm install          # Install dependencies
 npm run build        # Compile TypeScript (dist/)
 npm run dev          # Run with tsx (dev mode)
-npm test             # Run vitest tests (108 cases)
+npm test             # Run vitest tests (116 cases)
 node dist/cli.js     # Direct execution
 ```
 
@@ -484,6 +532,9 @@ node dist/cli.js     # Direct execution
 - [x] `config --setup` wizard
 - [x] Gmail MCP integration (zero-config email via `gmail_create_draft`)
 - [x] Cloud sync (Cloudflare D1 multi-machine aggregation)
+- [x] Cloudflare Workers AI integration (Qwen3-30B summarization)
+- [x] Auto machine ID (hardware-based, cross-platform)
+- [x] Token-only D1 setup (account/database auto-detection)
 - [ ] Passphrase encryption option
 - [ ] Similar task matching (TF-IDF)
 - [ ] External DB connectors (MariaDB/PostgreSQL)

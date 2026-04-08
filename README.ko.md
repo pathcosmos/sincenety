@@ -31,7 +31,7 @@ $ sincenety circle
 
 ### 3단계 파이프라인: air → circle → out
 
-**v0.4.0** CLI를 명확한 파이프라인으로 구성합니다:
+**v0.5.0** CLI를 명확한 파이프라인으로 구성합니다:
 
 1. **`sincenety air`** (환기) — 기록 수집/저장
    - 날짜별 그룹핑 (자정 경계, startedAt 기준)
@@ -56,7 +56,7 @@ $ sincenety circle
    - `outd` / `outw` / `outm`: 일일 / 주간 / 월간 강제 발신
    - `--preview`, `--render-only`, `--history`
 
-### CLI 명령어
+### CLI 명령어 (9개)
 
 | 명령어 | 설명 |
 |--------|------|
@@ -87,9 +87,24 @@ $ sincenety circle
 | 사용 모델 | assistant 응답에서 모델명 추출 |
 | 카테고리 | 프로젝트 경로 기반 자동 분류 |
 
-### AI 요약
+### AI 요약 엔진
 
-Claude Code 세션 자체를 요약 엔진으로 활용합니다. `circle --json`으로 대화 턴 포함 구조화 데이터를 출력하면, SKILL.md가 Claude Code에게 직접 요약 생성을 지시합니다. 외부 API 키 없이도 동작하며, `ANTHROPIC_API_KEY`가 있으면 Claude API 요약도 가능합니다.
+4단계 우선순위 시스템으로 자동 AI 요약:
+
+```
+1. Claude Code 안 (SKILL.md) → Claude Code가 직접 요약 (최고 품질)
+2. D1 토큰 있음            → Cloudflare Workers AI (Qwen3-30B) 자동
+3. ANTHROPIC_API_KEY       → Claude API
+4. 없음                    → 휴리스틱 fallback
+```
+
+- **Cloudflare Workers AI (Qwen3-30B)** 한국어 텍스트 요약 특화
+- D1 토큰만 있으면 자동 활성화 — 별도 API 키 불필요
+- `circle` 실행 시 자동 요약: 세션별 topic/outcome/flow/significance + 일일 overview
+- 무료 tier: 10,000 neurons/일 (개인 사용 충분, 하루 ~300회 요약 가능)
+- 월간 비용 ~$0.02 (사실상 무료)
+
+Claude Code 안에서 실행 시 SKILL.md 연동으로 최고 품질 요약. Claude Code 밖에서는 D1 토큰이 설정되어 있으면 Workers AI가 자동으로 동작합니다.
 
 ### 이메일 AI 요약 통합
 
@@ -139,8 +154,36 @@ Cloudflare D1을 통한 멀티머신 데이터 통합:
 - **`sincenety sync`**로 로컬 데이터를 중앙 D1 데이터베이스에 push (push / pull-config / status / init)
 - **자동 동기화**: `out` 완료 후 자동 sync (non-fatal -- 네트워크 오류가 이메일 발송을 차단하지 않음)
 - **공유 설정**: SMTP 설정 한 번이면 `sync --pull-config`로 새 머신에서 즉시 사용
-- **머신 ID**: hostname 기본값, `config --machine-name`으로 커스텀 식별
+- **머신 ID**: 하드웨어 기반 자동 감지 (아래 참조), `config --machine-name`으로 커스텀 식별
 - **의존성 무추가**: D1 REST API는 native `fetch` 사용 -- 새 패키지 없음
+
+### Token-Only D1 설정
+
+D1 토큰 하나면 나머지는 전부 자동:
+
+```bash
+sincenety config --d1-token cfp_xxxxxxxx
+# ✅ 계정 자동 감지
+# ✅ D1 DB 자동 생성/연결
+# ✅ machine_id 자동 감지 (하드웨어 UUID 기반)
+# ✅ Workers AI 자동 활성화
+# ✅ 스키마 세팅 완료
+```
+
+### 자동 머신 ID
+
+하드웨어 기반 머신 식별 — 설정 불필요:
+
+| 플랫폼 | 소스 | 특성 |
+|--------|------|------|
+| macOS | IOPlatformUUID | 하드웨어 고유, 재설치 불변 |
+| Linux | /etc/machine-id | OS 고유 |
+| Windows | MachineGuid | 설치 고유 |
+
+- **포맷**: `mac_a1b2c3d4_username`
+- 사용자가 아무것도 안 해도 자동 감지
+- 같은 기기면 항상 같은 ID
+- D1 동기화 머신 레지스트리 (`machines` 테이블)에서 사용
 
 ### 암호화 저장
 
@@ -329,7 +372,7 @@ sincenety config --smtp-pass    # Gmail 앱 비밀번호 입력 프롬프트
 ```
 sincenety/
 ├── src/
-│   ├── cli.ts                  # CLI 진입점 (commander: air, circle, out, sync, config, schedule)
+│   ├── cli.ts                  # CLI 진입점 (commander: 9개 명령 — air, circle, out, sync, config, schedule)
 │   ├── core/
 │   │   ├── air.ts              # Phase 1: 날짜별 갈무리 (백필 + 해시)
 │   │   ├── circle.ts           # Phase 2: LLM 요약 파이프라인 (finalization + 저장)
@@ -364,7 +407,11 @@ sincenety/
 │   ├── cloud/
 │   │   ├── d1-client.ts        # Cloudflare D1 REST API 클라이언트
 │   │   ├── d1-schema.ts        # D1 스키마 정의 및 마이그레이션
+│   │   ├── d1-auto-setup.ts    # Token-only 자동 설정 (계정/DB 감지)
+│   │   ├── cf-ai.ts            # Cloudflare Workers AI 클라이언트 (Qwen3-30B)
 │   │   └── sync.ts             # 동기화 로직 (push/pull/status/init)
+│   ├── util/
+│   │   └── machine-id.ts       # 크로스플랫폼 하드웨어 ID 감지
 │   ├── scheduler/
 │   │   └── install.ts          # launchd/cron 자동 설치
 │   └── skill/SKILL.md          # Claude Code skill 정의
@@ -376,7 +423,9 @@ sincenety/
 │   ├── out.test.ts             # out 명령 테스트 (28개)
 │   ├── vacation.test.ts        # 휴가 관리 테스트 (13개)
 │   ├── d1-client.test.ts       # D1 클라이언트 테스트
-│   └── sync.test.ts            # 동기화 테스트
+│   ├── sync.test.ts            # 동기화 테스트
+│   ├── cf-ai.test.ts           # Cloudflare Workers AI 테스트
+│   └── machine-id.test.ts      # 머신 ID 감지 테스트
 ├── package.json
 ├── tsconfig.json
 ├── CLAUDE.md
@@ -470,7 +519,8 @@ DB 파일: `~/.sincenety/sincenety.db` (AES-256-GCM 암호화, 0600 권한)
 | 암호화 | Node.js 내장 crypto (AES-256-GCM) |
 | 이메일 | nodemailer (Gmail SMTP), Resend API |
 | 클라우드 | Cloudflare D1 REST API (native fetch, 추가 의존성 없음) |
-| 테스트 | vitest (108개, 9개 테스트 파일) |
+| AI 요약 | Cloudflare Workers AI (Qwen3-30B), 추가 의존성 없음 |
+| 테스트 | vitest (116개, 11개 테스트 파일) |
 
 ### 의존성 (최소)
 
@@ -498,14 +548,14 @@ devDependencies:
 npm install          # 의존성 설치
 npm run build        # TypeScript 컴파일 (dist/)
 npm run dev          # tsx로 개발 실행
-npm test             # vitest 테스트 (108개)
+npm test             # vitest 테스트 (116개)
 node dist/cli.js     # 직접 실행
 ```
 
 ### 테스트
 
 ```bash
-# 전체 테스트 (108개)
+# 전체 테스트 (116개)
 npm test
 
 # 개별 테스트
@@ -624,6 +674,18 @@ CLI를 7개 명령에서 3단계 파이프라인으로 전면 재구성:
 - **`src/cloud/sync.ts`**: 동기화 핵심 로직
 - **테스트 108개**: 기존 91 + D1/sync 17개 추가
 
+### v0.5.0 (2026-04-07) — Cloudflare Workers AI 요약 엔진
+
+- **Cloudflare Workers AI 요약 엔진 (Qwen3-30B)**: 한국어 텍스트 요약 특화, D1 토큰만으로 자동 활성화
+- **Token-only D1 auto-setup**: account/database 자동 감지/생성, 토큰 하나면 나머지 전부 자동
+- **하드웨어 기반 자동 machine ID**: macOS (IOPlatformUUID) / Linux (/etc/machine-id) / Windows (MachineGuid)
+- **machines 레지스트리 테이블**: D1에 머신 정보 자동 등록
+- **4단계 요약 우선순위**: Claude Code (SKILL.md) → Workers AI → Claude API → 휴리스틱 fallback
+- **`src/cloud/cf-ai.ts`**: Workers AI 클라이언트
+- **`src/cloud/d1-auto-setup.ts`**: Token-only 자동 설정
+- **`src/util/machine-id.ts`**: 크로스플랫폼 하드웨어 ID 감지
+- **테스트 116개**: 기존 108 + cf-ai/machine-id 8개 추가
+
 ### 향후 계획
 
 - [x] npm publish → `npx sincenety@latest` 배포
@@ -634,6 +696,9 @@ CLI를 7개 명령에서 3단계 파이프라인으로 전면 재구성:
 - [x] `config --setup` 위저드
 - [x] Gmail MCP 연동 (zero-config 이메일, `gmail_create_draft`)
 - [x] 클라우드 동기화 (Cloudflare D1 멀티머신 통합)
+- [x] Cloudflare Workers AI integration (Qwen3-30B 요약)
+- [x] Auto machine ID (하드웨어 기반, 크로스플랫폼)
+- [x] Token-only D1 setup (계정/DB 자동 감지)
 - [ ] passphrase 설정 기능 완성
 - [ ] 유사 작업 매칭 (TF-IDF 기반)
 - [ ] MariaDB/PostgreSQL 외부 DB 연결
@@ -641,13 +706,13 @@ CLI를 7개 명령에서 3단계 파이프라인으로 전면 재구성:
 
 ---
 
-## 프로젝트 수치 (v0.4.0 기준)
+## 프로젝트 수치 (v0.5.0 기준)
 
 | 지표 | 수치 |
 |------|------|
-| TypeScript 소스 파일 | 17개 |
-| 테스트 | 108/108 통과 |
-| CLI 명령어 | 8개 (air, circle, out, outd, outw, outm, sync, config, schedule) |
+| TypeScript 소스 파일 | 20개 |
+| 테스트 | 116/116 통과 |
+| CLI 명령어 | 9개 (air, circle, out, outd, outw, outm, sync, config, schedule) |
 | DB 테이블 | 7개 |
 | 의존성 (production) | 3개 (commander, nodemailer, sql.js) |
 
