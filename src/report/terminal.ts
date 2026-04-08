@@ -4,7 +4,6 @@
 
 import type { SessionGroup } from "../grouper/session.js";
 import type { GatherResult } from "../core/gatherer.js";
-import type { SessionRecord } from "../storage/adapter.js";
 
 // ─── 유틸리티 ──────────────────────────────────────────
 
@@ -256,79 +255,3 @@ export function formatGatherReport(result: GatherResult): string {
   return lines.join("\n");
 }
 
-// ─── 로그 리포트 ────────────────────────────────────────
-
-export function formatLogReport(
-  records: SessionRecord[],
-  dateLabel: string
-): string {
-  const lines: string[] = [];
-
-  if (records.length === 0) {
-    lines.push(`\n  ${dateLabel}에 기록된 작업이 없습니다.\n`);
-    return lines.join("\n");
-  }
-
-  const totalMessages = records.reduce((s, r) => s + r.messageCount, 0);
-  const totalTokens = records.reduce(
-    (s, r) => s + r.inputTokens + r.outputTokens, 0
-  );
-
-  lines.push("");
-  let header = `  📋 ${dateLabel} 작업 기록 — ${records.length}개 세션, ${totalMessages}msg`;
-  if (totalTokens > 0) header += `, ${fmtTokens(totalTokens)}tok`;
-  lines.push(header);
-  lines.push("");
-
-  // 테이블 데이터 구성
-  const rows = records.map((r) => ({
-    project: r.projectName,
-    time: `${formatTime(r.startedAt)}~${formatTime(r.endedAt)}`,
-    duration: formatDuration(r.startedAt, r.endedAt),
-    messages: `${r.messageCount}`,
-    tokens: fmtTokens(r.inputTokens + r.outputTokens),
-    model: r.model || "-",
-    title: r.title || r.summary,
-  }));
-
-  const cols: TableColumn[] = [
-    { header: "#",        width: Math.max(1, String(rows.length).length), align: "right" },
-    { header: "프로젝트", width: Math.max(8, ...rows.map((r) => displayWidth(r.project))), align: "left" },
-    { header: "시간",     width: Math.max(4, ...rows.map((r) => displayWidth(r.time))), align: "left" },
-    { header: "소요",     width: Math.max(4, ...rows.map((r) => displayWidth(r.duration))), align: "right" },
-    { header: "메시지",   width: Math.max(6, ...rows.map((r) => displayWidth(r.messages))), align: "right" },
-    { header: "토큰",     width: Math.max(4, ...rows.map((r) => displayWidth(r.tokens))), align: "right" },
-    { header: "모델",     width: Math.max(4, ...rows.map((r) => displayWidth(r.model))), align: "left" },
-  ];
-
-  lines.push("  " + drawLine(cols, "┌", "┬", "┐", "─"));
-  lines.push("  " + drawRow(cols, cols.map((c) => c.header)));
-  lines.push("  " + drawLine(cols, "├", "┼", "┤", "─"));
-
-  rows.forEach((r, i) => {
-    lines.push("  " + drawRow(cols, [
-      String(i + 1),
-      r.project,
-      r.time,
-      r.duration,
-      r.messages,
-      r.tokens,
-      r.model,
-    ]));
-  });
-
-  lines.push("  " + drawLine(cols, "└", "┴", "┘", "─"));
-
-  // 작업 내용
-  lines.push("");
-  lines.push("  📝 세션별 작업 내용");
-  lines.push("  " + "─".repeat(60));
-
-  rows.forEach((r, i) => {
-    const title = truncate(r.title, 70);
-    lines.push(`  ${i + 1}. [${r.project}] ${title}`);
-  });
-
-  lines.push("");
-  return lines.join("\n");
-}

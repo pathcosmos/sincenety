@@ -1,6 +1,6 @@
 {
   "name": "sincenety",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Claude Code 작업 갈무리 도구 — 작업 이력 자동 분석 및 구조화된 기록 생성",
   "type": "module",
   "main": "dist/index.js",
