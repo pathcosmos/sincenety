@@ -336,6 +336,129 @@ program
     }
   });
 
+// ─── out 명령 ──────────────────────────────────────────
+
+program
+  .command("out")
+  .description("보고서 자동 발신 (요일/미발송 상태에 따라 유형 결정)")
+  .option("--preview", "발송 안 하고 미리보기만")
+  .option("--render-only", "HTML/제목/수신자 JSON 출력 (Gmail MCP용)")
+  .option("--history", "최근 발송 내역 조회")
+  .action(async (options) => {
+    const storage = new SqlJsAdapter();
+    try {
+      await storage.initialize();
+
+      if (options.history) {
+        const logs = await storage.getEmailLogs(20);
+        if (logs.length === 0) {
+          console.log("  발송 내역이 없습니다.");
+          return;
+        }
+
+        // ANSI table
+        const dateW = 12;
+        const typeW = 8;
+        const recipW = 30;
+        const statusW = 8;
+        const hLine = (l: string, m: string, r: string) =>
+          l +
+          "─".repeat(dateW + 2) +
+          m +
+          "─".repeat(typeW + 2) +
+          m +
+          "─".repeat(recipW + 2) +
+          m +
+          "─".repeat(statusW + 2) +
+          r;
+
+        console.log("");
+        console.log("  최근 발송 내역");
+        console.log("  " + hLine("┌", "┬", "┐"));
+        console.log(
+          "  │" +
+            ` ${padEndW("날짜", dateW)} │` +
+            ` ${padEndW("유형", typeW)} │` +
+            ` ${padEndW("수신자", recipW)} │` +
+            ` ${padEndW("상태", statusW)} │`,
+        );
+        console.log("  " + hLine("├", "┼", "┤"));
+
+        for (const log of logs) {
+          const dateStr = log.reportDate;
+          const typeStr = log.reportType;
+          const recip = log.recipient.length > recipW
+            ? log.recipient.slice(0, recipW - 2) + ".."
+            : log.recipient;
+          const status = log.status;
+          console.log(
+            "  │" +
+              ` ${padEndW(dateStr, dateW)} │` +
+              ` ${padEndW(typeStr, typeW)} │` +
+              ` ${padEndW(recip, recipW)} │` +
+              ` ${padEndW(status, statusW)} │`,
+          );
+        }
+
+        console.log("  " + hLine("└", "┴", "┘"));
+        console.log("");
+        return;
+      }
+
+      await showSetupReminder(storage);
+      const { runOut } = await import("./core/out.js");
+      const result = await runOut(storage, {
+        preview: options.preview,
+        renderOnly: options.renderOnly,
+      });
+      console.log(
+        `  ✅ out 완료 — ${result.sent}건 발송, ${result.skipped}건 스킵`,
+      );
+    } catch (err) {
+      console.error(
+        `  ❌ ${err instanceof Error ? err.message : String(err)}`,
+      );
+      process.exit(1);
+    } finally {
+      await storage.close();
+    }
+  });
+
+// ─── outd / outw / outm 명령 ──────────────────────────
+
+for (const [cmd, type, desc] of [
+  ["outd", "daily", "일일보고 강제 발신"],
+  ["outw", "weekly", "주간보고 강제 발신"],
+  ["outm", "monthly", "월간보고 강제 발신"],
+] as const) {
+  program
+    .command(cmd)
+    .description(desc)
+    .option("--preview", "발송 안 하고 미리보기만")
+    .action(async (options) => {
+      const storage = new SqlJsAdapter();
+      try {
+        await storage.initialize();
+        await showSetupReminder(storage);
+        const { runOut } = await import("./core/out.js");
+        const result = await runOut(storage, {
+          force: type,
+          preview: options.preview,
+        });
+        console.log(
+          `  ✅ ${cmd} 완료 — ${result.sent}건 발송, ${result.skipped}건 스킵`,
+        );
+      } catch (err) {
+        console.error(
+          `  ❌ ${err instanceof Error ? err.message : String(err)}`,
+        );
+        process.exit(1);
+      } finally {
+        await storage.close();
+      }
+    });
+}
+
 // ─── config 명령 ────────────────────────────────────────
 
 program
