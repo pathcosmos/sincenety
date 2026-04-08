@@ -27,12 +27,14 @@ function promptSecret(question: string): Promise<string> {
       const stdin = process.stdin;
       const wasRaw = stdin.isRaw;
       stdin.setRawMode(true);
+      stdin.resume();
       let password = "";
       const onData = (ch: Buffer) => {
         const c = ch.toString("utf8");
         if (c === "\n" || c === "\r") {
           stdin.setRawMode(wasRaw ?? false);
           stdin.removeListener("data", onData);
+          stdin.pause();
           process.stdout.write("\n");
           resolve(password);
         } else if (c === "\u0003") {

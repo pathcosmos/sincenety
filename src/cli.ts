@@ -918,30 +918,26 @@ program
 
 function promptPassword(prompt: string): Promise<string> {
   return new Promise((resolve) => {
-    const rl = createInterface({
-      input: process.stdin,
-      output: process.stdout,
-    });
-    // 비밀번호 입력 시 에코 숨기기
     if (process.stdin.isTTY) {
+      // TTY: raw mode로 에코 없이 직접 입력 받기
       process.stdout.write(prompt);
       const stdin = process.stdin;
       const wasRaw = stdin.isRaw;
       stdin.setRawMode(true);
+      stdin.resume();
       let password = "";
       const onData = (ch: Buffer) => {
         const c = ch.toString("utf8");
         if (c === "\n" || c === "\r") {
           stdin.setRawMode(wasRaw ?? false);
           stdin.removeListener("data", onData);
+          stdin.pause();
           process.stdout.write("\n");
-          rl.close();
           resolve(password);
         } else if (c === "\u0003") {
           // Ctrl+C
           stdin.setRawMode(wasRaw ?? false);
           stdin.removeListener("data", onData);
-          rl.close();
           process.exit(0);
         } else if (c === "\u007f" || c === "\b") {
           // Backspace
@@ -955,6 +951,10 @@ function promptPassword(prompt: string): Promise<string> {
       stdin.on("data", onData);
     } else {
       // Non-TTY: readline으로 한 줄 읽기
+      const rl = createInterface({
+        input: process.stdin,
+        output: process.stdout,
+      });
       rl.question(prompt, (answer) => {
         rl.close();
         resolve(answer);
