@@ -149,7 +149,7 @@ const MIGRATION_V3_TO_V4 = [
   "ALTER TABLE gather_reports ADD COLUMN report_date TEXT",
   "ALTER TABLE gather_reports ADD COLUMN data_hash TEXT",
   "ALTER TABLE gather_reports ADD COLUMN updated_at INTEGER",
-  "ALTER TABLE daily_reports ADD COLUMN status TEXT",
+  "ALTER TABLE daily_reports ADD COLUMN status TEXT DEFAULT 'in_progress'",
   "ALTER TABLE daily_reports ADD COLUMN progress_label TEXT",
   "ALTER TABLE daily_reports ADD COLUMN data_hash TEXT",
 ];
@@ -461,11 +461,20 @@ export class SqlJsAdapter implements StorageAdapter {
       );
     }
 
-    // 마지막 삽입 ID
-    const stmt = this.db!.prepare("SELECT last_insert_rowid() as id");
-    stmt.step();
-    const id = (stmt.getAsObject() as Record<string, unknown>).id as number;
-    stmt.free();
+    // ID 조회: date-based upsert 시 last_insert_rowid()가 부정확할 수 있음
+    let id: number;
+    if (report.reportDate) {
+      const idStmt = this.db!.prepare("SELECT id FROM gather_reports WHERE report_date = ?");
+      idStmt.bind([report.reportDate]);
+      idStmt.step();
+      id = (idStmt.getAsObject() as Record<string, unknown>).id as number;
+      idStmt.free();
+    } else {
+      const idStmt = this.db!.prepare("SELECT last_insert_rowid() as id");
+      idStmt.step();
+      id = (idStmt.getAsObject() as Record<string, unknown>).id as number;
+      idStmt.free();
+    }
     await this.save();
     return id;
   }
