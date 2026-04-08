@@ -29,12 +29,13 @@ $ sincenety circle
 
 ### 3-Phase Pipeline: air → circle → out
 
-**v0.3.0** restructures the CLI into a clear pipeline:
+**v0.4.0** structures the CLI into a clear pipeline:
 
 1. **`sincenety air`** (환기) — Collect and store work records by date
    - Date-based grouping (midnight boundary, startedAt-based)
    - Automatic backfill: checkpoint-based, collects empty dates too
    - Change detection: data hash skips unchanged dates
+   - Empty day records (no sessions = still recorded)
    - `--json` outputs per-date JSON
 
 2. **`sincenety circle`** (순환 정화) — LLM-powered summaries
@@ -44,6 +45,7 @@ $ sincenety circle
    - `--type daily|weekly|monthly`
    - Auto-finalization: midnight finalizes previous day, Monday finalizes previous week, 1st finalizes previous month
    - Change detection: data hash comparison saves tokens
+   - Vacation days get a [휴가] label automatically
 
 3. **`sincenety out`** — Smart email delivery
    - `out`: daily always, +weekly on Friday, +monthly on month-end
@@ -51,6 +53,18 @@ $ sincenety circle
    - 4 providers: Gmail MCP / Resend / Gmail SMTP / Custom SMTP
    - `outd` / `outw` / `outm`: force daily / weekly / monthly
    - `--preview`, `--render-only`, `--history`
+
+### CLI Commands
+
+| Command | Description |
+|---------|-------------|
+| `sincenety air` | Collect — date-grouped auto-backfill gathering |
+| `sincenety circle` | Summarize — LLM summary (--json/--save/--type) |
+| `sincenety out` | Smart dispatch (weekday + unsent catchup) |
+| `sincenety outd` / `outw` / `outm` | Force daily / weekly / monthly send |
+| `sincenety sync` | D1 central cloud sync |
+| `sincenety config` | Settings (--setup, --vacation, --d1-*) |
+| `sincenety schedule` | Auto-schedule (launchd/cron) |
 
 ### Retroactive Work Gathering
 
@@ -76,12 +90,24 @@ Generate summaries powered by Claude Code itself — no external API key needed.
 
 When `ANTHROPIC_API_KEY` is set, the `summarizer.ts` module can also call the Claude API directly.
 
+### Email AI Summary Integration
+
+Email reports include AI-generated summaries from `daily_reports`:
+- **Overview section** at the top of each email with a full-day summary
+- **Per-session mapping**: `daily_reports` wrapUp data maps to each session's topic/outcome/flow/significance
+- **Gmail 102KB clip prevention**: actions capped at 5 per session, text length optimized to stay under Gmail's clipping threshold
+
+### First-Run Setup Reminder
+
+Every 5th run, if email is not configured, sincenety displays a friendly reminder to run `config --setup`. Non-blocking — the tool works fully without email configuration.
+
 ### Vacation Management
 
 - **Google Calendar auto-detection** — SKILL.md instructs Claude Code to check Google Calendar for vacation events
 - **CLI manual registration** — `config --vacation 2026-04-10 2026-04-11`
 - **Vacation keywords** (Korean + English): 휴가/vacation/연차/PTO/병가/sick/반차/half-day
-- **Report integration** — vacation days get a [휴가] label; `out` skips vacation days automatically
+- **Vacation types**: vacation / sick / holiday / half / other
+- **Report integration** — vacation days get a [휴가] label in `circle`; `out` skips vacation days automatically
 
 ### Config Setup Wizard
 
@@ -109,10 +135,11 @@ Automatically gather at 6 PM (default). Uses launchd on macOS, crontab on Linux.
 Multi-machine data aggregation via Cloudflare D1:
 
 - **Local-first**: encrypted local DB remains the source of truth
-- **`sincenety sync`** pushes local data to a central D1 database
-- **Auto-sync** after `out` completes
-- **Shared config**: SMTP settings set once, work everywhere
-- **`sync --pull-config`** for new machine setup
+- **`sincenety sync`** pushes local data to a central D1 database (push / pull-config / status / init)
+- **Auto-sync** after `out` completes (non-fatal — network errors don't block email delivery)
+- **Shared config**: SMTP settings set once, `sync --pull-config` on new machines to pull shared config
+- **Machine ID**: hostname by default, `config --machine-name` override for custom identification
+- **Zero new dependencies**: uses native `fetch` for D1 REST API — no extra packages added
 
 ### Encrypted Storage
 
@@ -427,8 +454,9 @@ Auto-migration: v1 → v2 → v3 → v4
 | CLI | commander |
 | DB | sql.js (WASM SQLite, zero native deps) |
 | Encryption | Node.js built-in crypto (AES-256-GCM) |
-| Email | nodemailer (Gmail SMTP) |
-| Tests | vitest (108 cases) |
+| Email | nodemailer (Gmail SMTP), Resend API |
+| Cloud | Cloudflare D1 REST API (native fetch, zero extra deps) |
+| Tests | vitest (108 cases across 9 test files) |
 
 ---
 
