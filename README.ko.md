@@ -2,42 +2,60 @@
 
 > **[English Documentation (README.md)](./README.md)**
 
-**Claude Code 작업 갈무리 도구** — `sincenety` 한 번 실행으로 오늘 하루의 모든 Claude Code 작업을 자동 분석하여 구조화된 기록을 생성합니다.
+**Claude Code 작업 갈무리 도구** — 3단계 파이프라인으로 Claude Code 작업 이력을 자동 수집, 요약, 보고합니다.
 
-start/stop 없이, 오늘 00:00부터 현재까지의 모든 작업을 소급 정리합니다 (upsert로 중복 방지).
+start/stop 없이, 실행 시점에 소급하여 모든 작업을 자동 정리합니다.
 
 ```
-$ sincenety
+$ sincenety air
 
-  📋 2026년 4월 7일 화요일 작업 갈무리 (00:00 ~ 18:05)
+  📋 air 갈무리 완료
+     날짜 범위: 3일 (백필 2일)
+     총 세션: 12개
+     변경 날짜: 2일
+     변경: 2026-04-06, 2026-04-07
 
-  ┌─────────────────────────────────────────────────┐
-  │ 총 세션: 4개 │ 메시지: 1,605개 │ 토큰: 221.7K │
-  └─────────────────────────────────────────────────┘
+$ sincenety circle
 
-  ┌──────────────┬───────────────┬────────┬─────────┬───────────────────────────────┐
-  │ 프로젝트     │ 시간          │ 메시지 │ 토큰    │ 작업 내용                     │
-  ├──────────────┼───────────────┼────────┼─────────┼───────────────────────────────┤
-  │ claudflare   │ 11:22 ~ 14:49│ 445    │ 66.4K   │ 보안 강화 + 웹 분석 구축      │
-  │ sincenety    │ 15:01 ~ 18:05│ 312    │ 48.2K   │ AI 요약 일일보고 시스템       │
-  │ ...          │               │        │         │                               │
-  └──────────────┴───────────────┴────────┴─────────┴───────────────────────────────┘
-
-  ✅ 갈무리 완료. 기록이 저장되었습니다.
+  📋 circle 마무리 완료
+     날짜 범위: 3일
+     총 세션: 12개
+     변경 날짜: 2일
+     finalized: 2026-04-06
+     요약 필요: 2026-04-07
 ```
 
 ---
 
 ## 핵심 기능
 
+### 3단계 파이프라인: air → circle → out
+
+**v0.3.0**에서 CLI를 명확한 파이프라인으로 재구성했습니다:
+
+1. **`sincenety air`** (환기) — 기록 수집/저장
+   - 날짜별 그룹핑 (자정 경계, startedAt 기준)
+   - 자동 백필: checkpoint 기반, 빈 날짜도 수집
+   - 변경 감지: data hash로 미변경 스킵
+   - `--json` 옵션으로 날짜별 JSON 출력
+
+2. **`sincenety circle`** (순환 정화) — LLM 요약
+   - 내부적으로 `air` 자동 실행
+   - `--json`: 요약 필요 데이터 출력 (SKILL.md 연동)
+   - `--save`: stdin JSON → daily_reports 저장
+   - `--type daily|weekly|monthly`
+   - 자동 완료 처리: 자정→전날확정, 월요일→전주확정, 1일→전월확정
+   - 변경 감지: data hash 비교로 토큰 절약
+
+3. **`sincenety out`** (Plan 2에서 구현 예정) — 스마트 이메일 발신
+
 ### 소급 갈무리
 
-별도 기록 행위 없이, `sincenety` 실행 시 오늘 00:00부터 현재까지의 `~/.claude/` 데이터를 분석하여 프로젝트별/세션별 작업 내용을 자동 재구성합니다. 하루 전체를 수집하되 upsert로 중복을 방지합니다.
+별도 기록 행위 없이, `sincenety` 실행 시 `~/.claude/` 데이터를 분석하여 프로젝트별/세션별 작업 내용을 자동 재구성합니다.
 
 - **대화 턴 분석** — 사용자 입력 + 어시스턴트 응답 쌍(`conversationTurns`)을 함께 수집하여 정밀한 작업 내용 파악
 - **세션 JSONL 파싱** — `~/.claude/projects/[project]/[sessionId].jsonl`에서 토큰 사용량, 모델명, 정밀 타임스탬프, 대화 턴 추출
-- **history.jsonl 보조 인덱스** — 빠른 세션 목록 조회용
-- **갈무리 포인트** — 매 실행 시 "여기까지 정리했음" 마커를 저장하여 중복 없이 이어서 정리
+- **checkpoint 기반 백필** — 마지막 checkpoint 이후 자동 수집; 첫 실행 시 90일 백필
 
 ### 풍부한 작업 기록
 
@@ -50,24 +68,21 @@ $ sincenety
 | 사용 모델 | assistant 응답에서 모델명 추출 |
 | 카테고리 | 프로젝트 경로 기반 자동 분류 |
 
-### AI 요약 일일보고
+### AI 요약
 
-Claude Code 세션 자체를 요약 엔진으로 활용합니다. `--json` 플래그로 대화 턴 포함 구조화 JSON을 출력하면, SKILL.md가 Claude Code에게 직접 요약 생성을 지시합니다. 외부 API 키 없이도 동작하며, `ANTHROPIC_API_KEY`가 있으면 Claude API 요약도 가능합니다.
+Claude Code 세션 자체를 요약 엔진으로 활용합니다. `circle --json`으로 대화 턴 포함 구조화 데이터를 출력하면, SKILL.md가 Claude Code에게 직접 요약 생성을 지시합니다. 외부 API 키 없이도 동작하며, `ANTHROPIC_API_KEY`가 있으면 Claude API 요약도 가능합니다.
 
-- **`save-daily`** — AI가 생성한 일일보고를 DB에 저장
-- **`report`** — 일일/주간/월간 보고 조회 (주간/월간은 일일보고를 종합)
+### 설정 관리
 
-### 이메일 리포트
-
-Gmail SMTP를 통해 갈무리 리포트를 이메일로 발송합니다. 세션별 컬러 코딩, 토큰 대시보드, 갈무리 요약이 포함된 HTML 이메일입니다. wrapUp 데이터(outcome, flow, significance)를 반영하며, XML/시스템 태그가 정리된 깔끔한 이메일을 생성합니다.
+`sincenety config`를 인자 없이 실행하면 ANSI 설정 상태 테이블을 표시합니다. 휴가 등록, 이메일 provider 선택 (Gmail/Resend/custom SMTP) 등을 지원합니다.
 
 ### 자동 스케줄링
 
-오후 6시(기본)에 자동으로 갈무리 + 이메일 발송. macOS는 launchd, Linux는 crontab을 자동으로 설정합니다.
+오후 6시(기본)에 자동으로 갈무리. macOS는 launchd, Linux는 crontab을 자동으로 설정합니다.
 
 ### 암호화 저장
 
-모든 데이터는 AES-256-GCM으로 암호화되어 `~/.sincenety/sincenety.db`에 저장됩니다. 머신 바운드 키(hostname + username + 랜덤 salt)를 기본으로 사용하며, 선택적으로 passphrase를 설정할 수 있습니다.
+모든 데이터는 AES-256-GCM으로 암호화되어 `~/.sincenety/sincenety.db`에 저장됩니다. 머신 바운드 키(hostname + username + 랜덤 salt)를 기본으로 사용합니다.
 
 ---
 
@@ -76,69 +91,72 @@ Gmail SMTP를 통해 갈무리 리포트를 이메일로 발송합니다. 세션
 ### 설치
 
 ```bash
-# npx로 즉시 실행 (향후 npm publish 후)
+# npx로 즉시 실행
 npx sincenety@latest
 
+# 또는 글로벌 설치
+npm install -g sincenety
+
 # 또는 로컬 빌드
-git clone <repo-url>
+git clone https://github.com/pathcosmos/sincenety.git
 cd sincenety
-npm install
-npm run build
-npm link   # 글로벌 등록
+npm install && npm run build
+npm link
 ```
 
-### 기본 사용
+### air — 기록 수집
 
 ```bash
-# 갈무리 (오늘 00:00부터 현재까지)
-sincenety
+# 갈무리 (checkpoint 기반 백필, 첫 실행 = 90일)
+sincenety air
 
-# 특정 시점부터 갈무리
-sincenety --since "09:00"
-sincenety --since "2026-04-07 09:00"
+# 커스텀 history.jsonl 경로 지정
+sincenety air --history /path/to/history.jsonl
 
-# 구조화 JSON 출력 (대화 턴 포함, AI 요약 파이프라인용)
-sincenety --json
-
-# 빠른 모드 (토큰 추출 없이 history.jsonl만 사용)
-sincenety --no-detail
-
-# 작업 로그 조회
-sincenety log
-sincenety log --date 2026-04-06
-sincenety log --week
-
-# AI 요약 일일보고 저장 (stdin으로 JSON 입력)
-sincenety save-daily < daily_report.json
-
-# 보고 조회
-sincenety report                    # 오늘 일일보고
-sincenety report --week             # 주간 보고
-sincenety report --month            # 월간 보고
-sincenety report --date 2026-04-06  # 특정일 보고
+# JSON 출력 (날짜별 구조화 데이터)
+sincenety air --json
 ```
 
-### 이메일 설정
+### circle — AI 요약 파이프라인
 
 ```bash
-# 수신 이메일
-sincenety config --email user@gmail.com
+# air 실행 + finalization 상태 확인
+sincenety circle
 
-# SMTP 설정 (Gmail 앱 비밀번호)
+# AI 요약용 세션 데이터 JSON 출력 (SKILL.md 연동)
+sincenety circle --json
+
+# AI가 생성한 요약을 DB에 저장 (stdin JSON)
+sincenety circle --save < summary.json
+sincenety circle --save --type weekly < weekly_summary.json
+sincenety circle --save --type monthly < monthly_summary.json
+```
+
+### config — 설정 관리
+
+```bash
+# 현재 설정 상태 표시 (ANSI 테이블)
+sincenety config
+
+# 이메일 설정
+sincenety config --email you@gmail.com
 sincenety config --smtp-user sender@gmail.com
-sincenety config --smtp-pass   # 프롬프트에서 비밀번호 입력 (쉘 히스토리 노출 방지)
+sincenety config --smtp-pass       # 프롬프트에서 비밀번호 입력
+sincenety config --provider resend
+sincenety config --resend-key rk_...
 
-# 이메일 발송
-sincenety email
-sincenety email --date 2026-04-06
+# 휴가 관리
+sincenety config --vacation 2026-04-10 2026-04-11
+sincenety config --vacation-list
+sincenety config --vacation-clear 2026-04-10
 ```
 
 > Gmail 앱 비밀번호 생성: https://myaccount.google.com/apppasswords
 
-### 자동 갈무리 스케줄
+### schedule — 자동 갈무리 스케줄
 
 ```bash
-# 오후 6시 자동 갈무리 + 이메일 설치
+# 오후 6시 자동 갈무리 설치
 sincenety schedule --install
 
 # 시간 변경
@@ -186,17 +204,15 @@ Claude Code 안에서:
 
 Claude Code에서 `/sincenety` 입력 시:
 
-1. **데이터 수집** — CLI가 오늘 00:00 이후 모든 세션을 JSON으로 수집 (대화 턴 포함)
-2. **AI 요약** — Claude Code 자체가 대화 턴을 분석하여 세션별 topic/outcome/flow/significance + 하루 overview 생성
-3. **DB 저장** — `save-daily`로 `daily_reports` 테이블에 저장
-4. **터미널 리포트** — 구조화된 리포트를 터미널에 표시
-5. **이메일 발송** — 설정 시 AI 요약이 반영된 HTML 이메일 발송 (일일보고 overview, 세션별 컬러코딩 대시보드)
+1. **데이터 수집** — `air`가 checkpoint 기반 백필로 모든 세션 수집
+2. **JSON 출력** — `circle --json`이 대화 턴 포함 세션 데이터 출력
+3. **AI 요약** — Claude Code 자체가 topic/outcome/flow/significance 생성
+4. **DB 저장** — `circle --save`로 `daily_reports` 테이블에 저장
+5. **이메일 발송** — 설정 시 AI 요약이 반영된 HTML 이메일 발송
 
-핵심: Claude Code **자체가** AI이므로 외부 API 키가 필요 없습니다. Skill이 현재 세션에게 수집된 데이터를 직접 요약하도록 지시합니다.
+핵심: Claude Code **자체가** AI이므로 외부 API 키가 필요 없습니다.
 
 #### 이메일 설정 (선택)
-
-Claude Code 안에서 또는 터미널에서:
 
 ```bash
 sincenety config --email you@gmail.com
@@ -213,10 +229,12 @@ sincenety config --smtp-pass    # Gmail 앱 비밀번호 입력 프롬프트
 ```
 sincenety/
 ├── src/
-│   ├── cli.ts                  # CLI 진입점 (commander, 7개 서브커맨드)
+│   ├── cli.ts                  # CLI 진입점 (commander: air, circle, config, schedule)
 │   ├── core/
-│   │   ├── gatherer.ts         # 갈무리 핵심 로직 (파싱→그룹핑→저장→리포트)
-│   │   └── summarizer.ts      # AI 요약 (Claude API + 휴리스틱 fallback)
+│   │   ├── air.ts              # Phase 1: 날짜별 갈무리 (백필 + 해시)
+│   │   ├── circle.ts           # Phase 2: LLM 요약 파이프라인 (finalization + 저장)
+│   │   ├── gatherer.ts         # 갈무리 핵심 로직 (파싱→그룹핑→저장)
+│   │   └── summarizer.ts       # AI 요약 (Claude API + 휴리스틱 fallback)
 │   ├── parser/
 │   │   ├── history.ts          # ~/.claude/history.jsonl 스트리밍 파서
 │   │   └── session-jsonl.ts    # 세션 JSONL 파서 (토큰/모델/타이밍/대화턴 추출)
@@ -224,7 +242,7 @@ sincenety/
 │   │   └── session.ts          # sessionId+project 기준 그룹핑
 │   ├── storage/
 │   │   ├── adapter.ts          # StorageAdapter 인터페이스
-│   │   └── sqljs-adapter.ts    # sql.js 구현 (암호화 DB, 자동 마이그레이션)
+│   │   └── sqljs-adapter.ts    # sql.js 구현 (암호화 DB, v4 자동 마이그레이션)
 │   ├── encryption/
 │   │   ├── key.ts              # PBKDF2 키 파생 (머신 바운드 + passphrase)
 │   │   └── crypto.ts           # AES-256-GCM encrypt/decrypt
@@ -236,10 +254,12 @@ sincenety/
 │   │   └── template.ts         # Bright 컬러코딩 HTML 이메일 템플릿
 │   ├── scheduler/
 │   │   └── install.ts          # launchd/cron 자동 설치
-│   └── types/
-│       └── sql.js.d.ts         # sql.js 타입 정의
+│   └── skill/SKILL.md          # Claude Code skill 정의
 ├── tests/
-│   └── encryption.test.ts      # 암호화 테스트 (26개)
+│   ├── encryption.test.ts      # 암호화 테스트 (26개)
+│   ├── migration-v4.test.ts    # DB v3→v4 마이그레이션 테스트 (7개)
+│   ├── air.test.ts             # air 명령 테스트 (7개)
+│   └── circle.test.ts          # circle 명령 테스트 (10개)
 ├── package.json
 ├── tsconfig.json
 ├── CLAUDE.md
@@ -254,33 +274,45 @@ sincenety/
                                     ▼
 ~/.claude/projects/[project]/[sessionId].jsonl  ──→  토큰/모델/타이밍/대화턴 추출
                                     │
-                                    ▼
-                             그룹핑 + 요약 생성
-                                    │
-                     ┌──────────┬───┼───────┬──────────────┐
-                     ▼          ▼   ▼       ▼              ▼
-              터미널 출력  --json  DB 저장  이메일 발송  Claude Code
-              (테이블)    (구조화) (암호화)              AI 요약
-                                                          │
-                                                          ▼
-                                                   save-daily
-                                                   (일일보고 DB 저장)
-                                                          │
-                                                          ▼
-                                                   report (일일/주간/월간)
+                        ┌───────────┴───────────┐
+                        ▼                       ▼
+                  sincenety air           (날짜별 그룹핑)
+                  (checkpoint 백필,        (자정 경계)
+                   data hash 감지)
+                        │
+                        ▼
+                  gather_reports DB
+                        │
+           ┌────────────┼────────────┐
+           ▼            ▼            ▼
+     터미널 요약    air --json    circle
+     출력          (날짜별)     (자동 finalization)
+                                     │
+                        ┌────────────┼────────────┐
+                        ▼            ▼            ▼
+                  circle --json  circle --save  (out — Plan 2)
+                  (SKILL.md)    (daily_reports)  이메일 발송
+                        │
+                        ▼
+                  Claude Code
+                  AI 요약 생성
 ```
 
-### DB 스키마
+### DB 스키마 (v4)
 
-**5개 테이블:**
+**7개 테이블:**
 
 | 테이블 | 설명 |
 |--------|------|
 | `sessions` | 세션별 작업 기록 (22개 컬럼 — 토큰, 시간, 타이틀, 설명, 모델 등) |
-| `gather_reports` | 갈무리 실행마다 리포트 저장 (마크다운 + JSON) |
-| `daily_reports` | AI 요약 일일/주간/월간 보고 (UNIQUE(report_date, report_type)) |
+| `gather_reports` | 갈무리 리포트 (마크다운 + JSON, report_date, data_hash, updated_at) |
+| `daily_reports` | AI 요약 보고 (status, progress_label, data_hash; UNIQUE(report_date, report_type)) |
 | `checkpoints` | 갈무리 포인트 (마지막 처리 timestamp) |
-| `config` | 설정 (이메일, SMTP 등) |
+| `config` | 설정 (이메일, SMTP, provider 등) |
+| `vacations` | 휴가/공휴일 (date, type, source, label) |
+| `email_logs` | 이메일 발송 이력 |
+
+자동 마이그레이션: v1 → v2 → v3 → v4
 
 DB 파일: `~/.sincenety/sincenety.db` (AES-256-GCM 암호화, 0600 권한)
 
@@ -291,7 +323,6 @@ DB 파일: `~/.sincenety/sincenety.db` (AES-256-GCM 암호화, 0600 권한)
 - **키 소스**: `hostname + username + 랜덤 salt` (머신 바운드)
 - **Salt**: `~/.sincenety/sincenety.salt` (32바이트 랜덤, 설치 시 1회 생성, 0600 권한)
 - **파일 포맷**: `[4B magic "SNCT"][12B IV][ciphertext][16B auth tag]`
-- **선택적 passphrase**: `sincenety config --set-passphrase` (향후 구현 예정)
 
 ---
 
@@ -305,7 +336,7 @@ DB 파일: `~/.sincenety/sincenety.db` (AES-256-GCM 암호화, 0600 권한)
 | DB | sql.js (WASM SQLite, native 의존성 없음) |
 | 암호화 | Node.js 내장 crypto (AES-256-GCM) |
 | 이메일 | nodemailer (Gmail SMTP) |
-| 테스트 | vitest |
+| 테스트 | vitest (50개) |
 
 ### 의존성 (최소)
 
@@ -333,18 +364,21 @@ devDependencies:
 npm install          # 의존성 설치
 npm run build        # TypeScript 컴파일 (dist/)
 npm run dev          # tsx로 개발 실행
-npm test             # vitest 테스트
+npm test             # vitest 테스트 (50개)
 node dist/cli.js     # 직접 실행
 ```
 
 ### 테스트
 
 ```bash
-# 암호화 테스트 (26개)
-npx vitest run tests/encryption.test.ts
-
-# 전체 테스트
+# 전체 테스트 (50개)
 npm test
+
+# 개별 테스트
+npx vitest run tests/encryption.test.ts   # 암호화 (26개)
+npx vitest run tests/migration-v4.test.ts # DB 마이그레이션 (7개)
+npx vitest run tests/air.test.ts          # air 명령 (7개)
+npx vitest run tests/circle.test.ts       # circle 명령 (10개)
 ```
 
 ### 로컬 npx 테스트
@@ -386,53 +420,60 @@ npx .                # 현재 디렉토리를 npx로 실행
 - **마크다운 리포트**: 토큰/모델 포함 풍부한 리포트
 - **이메일 발송**: nodemailer + Gmail SMTP
 - **HTML 이메일 템플릿**: Bright 컬러코딩 대시보드
-  - Section 01: 세션 갈무리 요약 (최상단)
-  - Section 02: 오늘의 수치 (토큰/비용 대시보드)
-  - Section 03: 세션별 상세 작업 로그
-  - Section 04: 하루의 성과
 - **자동 스케줄링**: launchd (macOS) / crontab (Linux) 자동 설치
-- **`--auto` 플래그**: 갈무리 + 이메일 자동 발송 (스케줄러용)
+
+### v0.2.1 (2026-04-07) — 이메일 AI 요약 통합
+
+- **이메일에 AI 요약 반영**: `daily_reports`의 AI 요약을 이메일 템플릿에 매핑
+- **일일보고 overview**: 이메일 최상단에 하루 종합 요약 섹션 추가
+- **Gmail 클립 방지**: actions를 세션당 최대 5건으로 제한
+- **제목 개선**: "작업 갈무리" → "일일보고"로 변경
 
 ### v0.3 (2026-04-07) — AI 요약 일일보고 + 주간/월간 보고
 
 - **기본 갈무리 범위 변경**: 항상 오늘 00:00부터 (upsert로 중복 방지)
 - **대화 턴 수집**: `session-jsonl.ts`에서 사용자 입력 + 어시스턴트 응답 쌍(`conversationTurns`) 추출
-- **터미널 테이블 출력**: 요약 테이블 + 세션 상세 테이블 (유니코드 박스 드로잉, 한글 fullwidth 폭 계산)
-- **AI 요약 아키텍처**: `--json` 플래그로 대화 턴 포함 구조화 JSON 출력, SKILL.md가 Claude Code에게 직접 요약 지시
-- **summarizer.ts**: Claude API 요약 (`ANTHROPIC_API_KEY` 있을 때) + 휴리스틱 fallback
-- **일일보고 시스템**: `save-daily` (stdin JSON → DB 저장), `report` (일일/주간/월간 조회)
-- **DB 스키마 v3**: `daily_reports` 테이블 추가 (UNIQUE(report_date, report_type))
-- **이메일 개선**: XML/시스템 태그 정리 (cleanText, esc 함수 강화), wrapUp 데이터 반영, Section 04 작업 흐름 표시
+- **터미널 테이블 출력**: 요약 테이블 + 세션 상세 테이블 (유니코드 박스 드로잉)
+- **AI 요약 아키텍처**: `--json` 플래그로 대화 턴 포함 구조화 JSON 출력
+- **summarizer.ts**: Claude API 요약 + 휴리스틱 fallback
+- **일일보고 시스템**: `save-daily`, `report` (일일/주간/월간)
+- **DB 스키마 v3**: `daily_reports` 테이블 추가
 
-### v0.2.1 (2026-04-07) — 이메일 AI 요약 통합
+### v0.3.0 (2026-04-07) — air/circle 파이프라인, DB v4
 
-- **이메일에 AI 요약 반영**: `daily_reports`의 AI 요약(topic, outcome, flow, significance)을 이메일 템플릿에 매핑
-- **일일보고 overview**: 이메일 최상단에 하루 종합 요약 섹션 추가
-- **Gmail 클립 방지**: actions를 세션당 최대 5건으로 제한, 텍스트 길이 최적화 (55KB → Gmail 102KB 한도 이내)
-- **제목 개선**: "작업 갈무리" → "일일보고"로 변경
+CLI를 7개 명령에서 3단계 파이프라인으로 전면 재구성:
+
+- **`air` 명령**: 날짜별 갈무리 (자정 경계, startedAt 기준), checkpoint 기반 자동 백필, data hash 변경 감지
+- **`circle` 명령**: 내부적으로 air 실행 후 LLM 요약 연동, `--json`/`--save`/`--type` 옵션, 자동 finalization (전날/전주/전월 확정)
+- **`config` 강화**: 인자 없이 실행 시 ANSI 설정 상태 테이블, `--vacation` 휴가 등록, `--provider`/`--resend-key` 이메일 provider 선택
+- **DB 스키마 v4**: gather_reports에 report_date/data_hash/updated_at 추가, daily_reports에 status/progress_label/data_hash 추가, `email_logs`/`vacations` 테이블 신규
+- **v3→v4 자동 마이그레이션**
+- **테스트 50개**: encryption 26 + migration-v4 7 + air 7 + circle 10
 
 ### 향후 계획
 
 - [x] npm publish → `npx sincenety@latest` 배포
+- [x] 3단계 파이프라인 (air → circle → out)
+- [x] checkpoint 기반 백필 + 변경 감지
+- [x] 휴가 관리
+- [ ] `out` 명령 — 스마트 이메일 발신 (Plan 2)
+- [ ] `config --setup` 위저드 (Plan 3)
 - [ ] passphrase 설정 기능 완성
 - [ ] 유사 작업 매칭 (TF-IDF 기반)
-- [ ] MariaDB/PostgreSQL 외부 DB 연결 (현재 비활성화)
-- [x] 주간/월간 요약 리포트
+- [ ] MariaDB/PostgreSQL 외부 DB 연결
 - [ ] ccusage 연동 (토큰 비용 자동 계산)
 
 ---
 
-## 프로젝트 수치 (2026-04-07 기준)
+## 프로젝트 수치 (v0.3.0 기준)
 
 | 지표 | 수치 |
 |------|------|
-| TypeScript 소스 파일 | 15개 |
-| 총 코드 라인 | 3,013줄 |
-| 암호화 테스트 | 26/26 통과 |
-| CLI 명령어 | 7개 (갈무리, log, config, email, schedule, save-daily, report) |
-| DB 테이블 | 5개 |
+| TypeScript 소스 파일 | 17개 |
+| 테스트 | 50/50 통과 |
+| CLI 명령어 | 4개 (air, circle, config, schedule) |
+| DB 테이블 | 7개 |
 | 의존성 (production) | 3개 (commander, nodemailer, sql.js) |
-| 보안 이슈 발견/수정 | 8/8 |
 
 ---
 

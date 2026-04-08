@@ -1,38 +1,58 @@
 # sincenety
 
-**Automatic work session tracker for Claude Code** — Run `sincenety` once and it retroactively analyzes all Claude Code activity since the last checkpoint, generating structured work records with token usage, model info, and precise timing.
-
-No start/stop needed. Just run it when you're done.
+**Automatic work session tracker for Claude Code** — A 3-phase pipeline that retroactively collects, summarizes, and reports all Claude Code activity. No start/stop needed.
 
 > **[한국어 문서 (Korean)](./README.ko.md)**
 
 ```
-$ sincenety
+$ sincenety air
 
-  📋 2026-04-07 (Mon) Work Gather (00:00 ~ 18:05)
-  ┌─────────────────────────────────────────────────────────┐
-  │ Sessions: 4 │ Messages: 1605 │ Tokens: 9.0Ki / 212.7Ko │
-  └─────────────────────────────────────────────────────────┘
-  ┌──────────────┬───────────────┬────────┬────────┬────────┐
-  │ Project      │ Time          │ Msgs   │ Tokens │ Model  │
-  ├──────────────┼───────────────┼────────┼────────┼────────┤
-  │ claudflare   │ 11:22 ~ 14:49 │    445 │ 66.4K  │ opus   │
-  │ sincenety    │ 14:55 ~ 18:05 │    860 │ 98.2K  │ opus   │
-  │ ...          │               │        │        │        │
-  └──────────────┴───────────────┴────────┴────────┴────────┘
-  ✅ Gather complete. Records saved.
+  📋 air 갈무리 완료
+     날짜 범위: 3일 (백필 2일)
+     총 세션: 12개
+     변경 날짜: 2일
+     변경: 2026-04-06, 2026-04-07
+
+$ sincenety circle
+
+  📋 circle 마무리 완료
+     날짜 범위: 3일
+     총 세션: 12개
+     변경 날짜: 2일
+     finalized: 2026-04-06
+     요약 필요: 2026-04-07
 ```
 
 ---
 
 ## Features
 
+### 3-Phase Pipeline: air → circle → out
+
+**v0.3.0** restructures the CLI into a clear pipeline:
+
+1. **`sincenety air`** (환기) — Collect and store work records by date
+   - Date-based grouping (midnight boundary, startedAt-based)
+   - Automatic backfill: checkpoint-based, collects empty dates too
+   - Change detection: data hash skips unchanged dates
+   - `--json` outputs per-date JSON
+
+2. **`sincenety circle`** (순환 정화) — LLM-powered summaries
+   - Internally runs `air` first
+   - `--json`: outputs session data for AI summary (SKILL.md integration)
+   - `--save`: saves stdin JSON to `daily_reports`
+   - `--type daily|weekly|monthly`
+   - Auto-finalization: midnight finalizes previous day, Monday finalizes previous week, 1st finalizes previous month
+   - Change detection: data hash comparison saves tokens
+
+3. **`sincenety out`** (Plan 2) — Smart email delivery (coming soon)
+
 ### Retroactive Work Gathering
 
 No need to remember to start/stop tracking. `sincenety` parses `~/.claude/` data at runtime and reconstructs everything:
 
-- **Session JSONL parsing** — Extracts token usage, model names, millisecond-precision timestamps, and conversation turns (user input + assistant output pairs) from `~/.claude/projects/[project]/[sessionId].jsonl`
-- **Full-day default** — Always gathers from today 00:00 by default; upsert logic prevents duplicates across runs
+- **Session JSONL parsing** — Extracts token usage, model names, millisecond-precision timestamps, and conversation turns from `~/.claude/projects/[project]/[sessionId].jsonl`
+- **Checkpoint-based backfill** — Automatically fills gaps from last checkpoint; first run backfills 90 days
 
 ### Rich Work Records
 
@@ -45,19 +65,19 @@ No need to remember to start/stop tracking. `sincenety` parses `~/.claude/` data
 | Model | Extracted from assistant responses |
 | Category | Auto-classified from project path |
 
-### AI-Powered Daily Reports
+### AI-Powered Summaries
 
-Generate summaries powered by Claude Code itself — no external API key needed. The CLI outputs structured JSON with conversation turns, and the Claude Code skill (SKILL.md) instructs the session to generate summaries directly. Summaries are saved to the `daily_reports` table and can be viewed as daily, weekly, or monthly reports.
+Generate summaries powered by Claude Code itself — no external API key needed. The `circle --json` command outputs structured data, and the Claude Code skill (SKILL.md) instructs the session to generate summaries directly. Summaries are saved to `daily_reports` with daily, weekly, or monthly types.
 
-When `ANTHROPIC_API_KEY` is set, the `summarizer.ts` module can also call the Claude API directly for turn-based analysis with heuristic fallback.
+When `ANTHROPIC_API_KEY` is set, the `summarizer.ts` module can also call the Claude API directly.
 
-### Email Reports
+### Config Management
 
-Send beautiful HTML email reports via Gmail SMTP. Color-coded sessions, token dashboard, work flow, and outcome/significance data included. XML/system tag cleanup ensures clean output.
+Run `sincenety config` with no arguments to see a formatted settings status table. Supports vacation registration, email provider selection (Gmail/Resend/custom SMTP), and more.
 
 ### Auto-Scheduling
 
-Automatically gather and email at 6 PM (default). Uses launchd on macOS, crontab on Linux.
+Automatically gather at 6 PM (default). Uses launchd on macOS, crontab on Linux.
 
 ### Encrypted Storage
 
@@ -83,61 +103,59 @@ npm link
 
 ## Usage
 
-### Basic Gathering
+### air — Collect Work Records
 
 ```bash
-# Gather today's work (default: from 00:00, upsert prevents duplicates)
-sincenety
+# Collect all sessions (checkpoint-based backfill, first run = 90 days)
+sincenety air
 
-# Gather from specific time
-sincenety --since "09:00"
-sincenety --since "2026-04-07 09:00"
+# Specify custom history.jsonl path
+sincenety air --history /path/to/history.jsonl
 
-# JSON output with conversation turns (for AI summary pipeline)
-sincenety --json
-
-# Fast mode (history.jsonl only, no token extraction)
-sincenety --no-detail
-
-# View saved logs
-sincenety log
-sincenety log --date 2026-04-06
-sincenety log --week
+# JSON output (per-date structured data)
+sincenety air --json
 ```
 
-### Daily Reports
+### circle — AI Summary Pipeline
 
 ```bash
-# Save an AI-generated summary to the DB (accepts JSON from stdin)
-sincenety save-daily < summary.json
+# Run air + check finalization status
+sincenety circle
 
-# View daily/weekly/monthly reports
-sincenety report                   # Today's report
-sincenety report --date 2026-04-06
-sincenety report --week            # Weekly aggregate
-sincenety report --month           # Monthly aggregate
+# Output session data as JSON for AI summary (SKILL.md integration)
+sincenety circle --json
+
+# Save AI-generated summary to DB (stdin JSON)
+sincenety circle --save < summary.json
+sincenety circle --save --type weekly < weekly_summary.json
+sincenety circle --save --type monthly < monthly_summary.json
 ```
 
-### Email Setup
+### config — Settings Management
 
 ```bash
-# Set recipient
+# Show current settings (ANSI table)
+sincenety config
+
+# Email settings
 sincenety config --email you@gmail.com
-
-# Set SMTP (Gmail app password)
 sincenety config --smtp-user sender@gmail.com
-sincenety config --smtp-pass   # Prompted securely, not in shell history
+sincenety config --smtp-pass       # Prompted securely
+sincenety config --provider resend
+sincenety config --resend-key rk_...
 
-# Send report
-sincenety email
+# Vacation management
+sincenety config --vacation 2026-04-10 2026-04-11
+sincenety config --vacation-list
+sincenety config --vacation-clear 2026-04-10
 ```
 
 > Generate Gmail app password: https://myaccount.google.com/apppasswords
 
-### Auto-Schedule
+### schedule — Auto-Scheduling
 
 ```bash
-sincenety schedule --install           # Install 6 PM daily gather + email
+sincenety schedule --install           # Install 6 PM daily
 sincenety schedule --install --time 19:00  # Custom time
 sincenety schedule --status            # Check status
 sincenety schedule --uninstall         # Remove
@@ -180,17 +198,15 @@ Inside Claude Code, run:
 
 When you type `/sincenety` inside Claude Code:
 
-1. **Data collection** — CLI gathers all sessions since 00:00 as JSON (with conversation turns)
-2. **AI summary** — Claude Code itself analyzes conversation turns and generates topic/outcome/flow/significance for each session, plus an overview
-3. **Save to DB** — Summary is saved to `daily_reports` table via `save-daily`
-4. **Terminal report** — Structured report shown in terminal
-5. **Email** — If configured, sends an HTML email with AI summary, color-coded dashboard, and daily overview
+1. **Data collection** — `air` collects all sessions with checkpoint-based backfill
+2. **JSON output** — `circle --json` outputs session data with conversation turns
+3. **AI summary** — Claude Code itself analyzes and generates topic/outcome/flow/significance
+4. **Save to DB** — `circle --save` writes summary to `daily_reports`
+5. **Email** — If configured, sends an HTML email with AI summary
 
-The key insight: Claude Code **is** the AI — no external API key needed. The skill instructs the current session to summarize the collected data directly.
+The key insight: Claude Code **is** the AI — no external API key needed.
 
 #### Email setup (optional)
-
-Inside Claude Code or terminal:
 
 ```bash
 sincenety config --email you@gmail.com
@@ -207,17 +223,19 @@ sincenety config --smtp-pass    # Prompts for Gmail app password
 ```
 sincenety/
 ├── src/
-│   ├── cli.ts                  # CLI entry (commander, 7 subcommands)
+│   ├── cli.ts                  # CLI entry (commander: air, circle, config, schedule)
 │   ├── core/
-│   │   ├── gatherer.ts         # Core logic (parse → group → store → report)
+│   │   ├── air.ts              # Phase 1: date-based gathering (backfill + hash)
+│   │   ├── circle.ts           # Phase 2: LLM summary pipeline (finalization + save)
+│   │   ├── gatherer.ts         # Core gathering logic (parse → group → store)
 │   │   └── summarizer.ts       # Claude API summarization + heuristic fallback
 │   ├── parser/
 │   │   ├── history.ts          # ~/.claude/history.jsonl streaming parser
-│   │   └── session-jsonl.ts    # Session JSONL parser (tokens/model/timing/conversationTurns)
+│   │   └── session-jsonl.ts    # Session JSONL parser (tokens/model/timing/turns)
 │   ├── grouper/session.ts      # Session grouping by sessionId + project
 │   ├── storage/
 │   │   ├── adapter.ts          # StorageAdapter interface
-│   │   └── sqljs-adapter.ts    # sql.js implementation (encrypted DB)
+│   │   └── sqljs-adapter.ts    # sql.js implementation (encrypted DB, v4 migration)
 │   ├── encryption/
 │   │   ├── key.ts              # PBKDF2 key derivation (machine-bound + passphrase)
 │   │   └── crypto.ts           # AES-256-GCM encrypt/decrypt
@@ -227,8 +245,13 @@ sincenety/
 │   ├── email/
 │   │   ├── sender.ts           # nodemailer email sender
 │   │   └── template.ts         # Bright color-coded HTML email template
-│   └── scheduler/install.ts    # launchd/cron auto-installer
-├── tests/encryption.test.ts    # Encryption tests (26 cases)
+│   ├── scheduler/install.ts    # launchd/cron auto-installer
+│   └── skill/SKILL.md          # Claude Code skill definition
+├── tests/
+│   ├── encryption.test.ts      # Encryption tests (26 cases)
+│   ├── migration-v4.test.ts    # DB v3→v4 migration tests (7 cases)
+│   ├── air.test.ts             # air command tests (7 cases)
+│   └── circle.test.ts          # circle command tests (10 cases)
 ├── package.json
 └── tsconfig.json
 ```
@@ -241,15 +264,28 @@ sincenety/
                                     ▼
 ~/.claude/projects/[project]/[sessionId].jsonl  ──→  Extract tokens/model/timing/turns
                                     │
-                                    ▼
-                             Group + summarize
-                                    │
-                     ┌──────────┬───┼───────┬──────────────┐
-                     ▼          ▼   ▼       ▼              ▼
-              Terminal table  DB save  Email  --json output  AI summary
-              (box-drawing)  (encrypted)            │       (Claude Code
-               + CJK-aware                         ▼        or API)
-                                            save-daily ──→ daily_reports
+                        ┌───────────┴───────────┐
+                        ▼                       ▼
+                  sincenety air           (date grouping)
+                  (checkpoint backfill,    (midnight boundary)
+                   data hash detection)
+                        │
+                        ▼
+                  gather_reports DB
+                        │
+           ┌────────────┼────────────┐
+           ▼            ▼            ▼
+     terminal       air --json    circle
+     summary        (per-date)   (auto-finalization)
+                                     │
+                        ┌────────────┼────────────┐
+                        ▼            ▼            ▼
+                  circle --json  circle --save  (out — Plan 2)
+                  (SKILL.md)    (daily_reports)  email delivery
+                        │
+                        ▼
+                  Claude Code
+                  AI summary
 ```
 
 ### Encryption
@@ -260,15 +296,19 @@ sincenety/
 - **Salt**: `~/.sincenety/sincenety.salt` (32-byte random, created once, mode 0600)
 - **File format**: `[4B magic "SNCT"][12B IV][ciphertext][16B auth tag]`
 
-### DB Schema
+### DB Schema (v4)
 
 | Table | Description |
 |-------|-------------|
 | `sessions` | Per-session work records (22 columns — tokens, timing, title, description, model, etc.) |
-| `gather_reports` | Report per gather run (markdown + JSON) |
-| `daily_reports` | AI-generated daily/weekly/monthly summaries (UNIQUE(report_date, report_type)) |
+| `gather_reports` | Report per gather run (markdown + JSON, report_date, data_hash, updated_at) |
+| `daily_reports` | AI-generated summaries (status, progress_label, data_hash; UNIQUE(report_date, report_type)) |
 | `checkpoints` | Last processed timestamp |
-| `config` | Settings (email, SMTP, etc.) |
+| `config` | Settings (email, SMTP, provider, etc.) |
+| `vacations` | Vacation/holiday dates (date, type, source, label) |
+| `email_logs` | Email delivery logs |
+
+Auto-migration: v1 → v2 → v3 → v4
 
 ---
 
@@ -282,7 +322,7 @@ sincenety/
 | DB | sql.js (WASM SQLite, zero native deps) |
 | Encryption | Node.js built-in crypto (AES-256-GCM) |
 | Email | nodemailer (Gmail SMTP) |
-| Tests | vitest |
+| Tests | vitest (50 cases) |
 
 ---
 
@@ -292,7 +332,7 @@ sincenety/
 npm install          # Install dependencies
 npm run build        # Compile TypeScript (dist/)
 npm run dev          # Run with tsx (dev mode)
-npm test             # Run vitest tests
+npm test             # Run vitest tests (50 cases)
 node dist/cli.js     # Direct execution
 ```
 
@@ -303,6 +343,11 @@ node dist/cli.js     # Direct execution
 - [x] Weekly/monthly summary reports
 - [x] Email with AI summary (daily overview + per-session topic/outcome/flow)
 - [x] Gmail clip prevention (actions capped at 5/session, text length optimized)
+- [x] 3-phase pipeline (air → circle → out)
+- [x] Checkpoint-based backfill with change detection
+- [x] Vacation management
+- [ ] `out` command — smart email delivery (Plan 2)
+- [ ] `config --setup` wizard (Plan 3)
 - [ ] Passphrase encryption option
 - [ ] Similar task matching (TF-IDF)
 - [ ] External DB connectors (MariaDB/PostgreSQL)
