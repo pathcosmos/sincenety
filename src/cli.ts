@@ -23,25 +23,47 @@ program
 
 // ─── setup reminder ─────────────────────────────────────
 
-async function showSetupReminder(storage: StorageAdapter): Promise<void> {
-  const email = await storage.getConfig("email");
-  if (email) return; // 이미 설정됨
+/**
+ * 필수 설정 가드 — D1 토큰 + SMTP(또는 Resend) 미설정 시 실행 차단.
+ * 모든 커맨드(config 제외) 실행 전에 호출.
+ */
+async function requireSetup(storage: StorageAdapter): Promise<void> {
+  const missing: string[] = [];
 
-  const countStr = await storage.getConfig("setup_shown_count");
-  const count = countStr ? parseInt(countStr, 10) : 0;
-
-  // 첫 실행(0) 또는 5의 배수일 때 표시
-  if (count === 0 || count % 5 === 0) {
-    console.log("");
-    console.log("  ┌──────────────────────────────────────────────────┐");
-    console.log("  │ 📋 설정: sincenety config --setup                │");
-    console.log("  │ 💡 Claude Code 안에서는 설정 없이 Gmail MCP 사용 │");
-    console.log("  │ ⏩ 이메일 없이 계속 진행합니다...                │");
-    console.log("  └──────────────────────────────────────────────────┘");
-    console.log("");
+  // 1. D1 토큰 체크
+  const d1Token = await storage.getConfig("d1_api_token");
+  if (!d1Token) {
+    missing.push("D1");
   }
 
-  await storage.setConfig("setup_shown_count", String(count + 1));
+  // 2. 이메일 발송 체크 (SMTP 또는 Resend)
+  const [smtpPass, resendKey] = await Promise.all([
+    storage.getConfig("smtp_pass"),
+    storage.getConfig("resend_key"),
+  ]);
+  if (!smtpPass && !resendKey) {
+    missing.push("이메일");
+  }
+
+  if (missing.length === 0) return;
+
+  console.log("");
+  console.log("  ┌──────────────────────────────────────────────────────────┐");
+  console.log("  │ ❌ 필수 설정이 완료되지 않았습니다                      │");
+  console.log("  ├──────────────────────────────────────────────────────────┤");
+  if (missing.includes("D1")) {
+    console.log("  │ 1. D1 클라우드 동기화 (필수)                            │");
+    console.log("  │    sincenety config --d1-token <API_TOKEN>              │");
+    console.log("  │    토큰 생성: https://dash.cloudflare.com/profile/api-tokens │");
+  }
+  if (missing.includes("이메일")) {
+    console.log("  │ 2. 이메일 발송 (필수)                                   │");
+    console.log("  │    sincenety config --setup                             │");
+    console.log("  │    Gmail 앱 비밀번호: https://myaccount.google.com/apppasswords │");
+  }
+  console.log("  └──────────────────────────────────────────────────────────┘");
+  console.log("");
+  process.exit(1);
 }
 
 // ─── config status table ────────────────────────────────
@@ -187,6 +209,14 @@ async function showConfigStatus(storage: StorageAdapter): Promise<void> {
   }
 
   console.log("  " + d1HLine("└", "┴", "┘"));
+
+  // AI provider section
+  const { resolveAiProvider } = await import("./core/ai-provider.js");
+  const aiProviderExplicit = await storage.getConfig("ai_provider");
+  const resolved = await resolveAiProvider(storage);
+  const aiVal = aiProviderExplicit ?? "auto";
+  const aiResolved = aiProviderExplicit ? resolved : `auto → ${resolved}`;
+  console.log(`  AI 요약: ai_provider = ${aiVal} (${aiResolved})`);
   console.log("");
 }
 
@@ -242,7 +272,7 @@ program
     const storage = new SqlJsAdapter();
     try {
       await storage.initialize();
-      await showSetupReminder(storage);
+      await requireSetup(storage);
 
       const result = await runAir(storage, { historyPath });
 
@@ -294,6 +324,7 @@ program
   .description("마무리 — AI 요약 연동 (JSON 출력/저장)")
   .option("--json", "요약 필요 세션 데이터 JSON 출력 (SKILL.md용)")
   .option("--save", "stdin JSON → daily_reports 저장")
+  .option("--summarize", "Workers AI로 세션 요약 포함 (--json과 함께 사용)")
   .option("--type <type>", "보고 유형: daily | weekly | monthly", "daily")
   .option("--history <path>", "history.jsonl 경로")
   .action(async (options) => {
@@ -376,10 +407,10 @@ program
     const storage = new SqlJsAdapter();
     try {
       await storage.initialize();
-      await showSetupReminder(storage);
+      await requireSetup(storage);
 
       if (options.json) {
-        const jsonResult = await circleJson(storage, { historyPath });
+        const jsonResult = await circleJson(storage, { historyPath, summarize: options.summarize });
         console.log(JSON.stringify(jsonResult));
       } else {
         const result = await runCircle(storage, { historyPath });
@@ -475,7 +506,7 @@ program
         return;
       }
 
-      await showSetupReminder(storage);
+      await requireSetup(storage);
       const { runOut } = await import("./core/out.js");
       const result = await runOut(storage, {
         preview: options.preview,
@@ -509,7 +540,7 @@ for (const [cmd, type, desc] of [
       const storage = new SqlJsAdapter();
       try {
         await storage.initialize();
-        await showSetupReminder(storage);
+        await requireSetup(storage);
         const { runOut } = await import("./core/out.js");
         const result = await runOut(storage, {
           force: type,
@@ -550,6 +581,7 @@ program
   .option("--d1-database <id>", "D1 Database ID")
   .option("--d1-token <token>", "Cloudflare API Token")
   .option("--machine-name <name>", "이 머신의 식별 이름")
+  .option("--ai-provider <provider>", "AI 요약 provider (cloudflare | anthropic | claude-code | auto)")
   .option("--setup-d1", "D1 설정 위저드")
   .option("--setup", "설정 위저드 실행")
   .action(async (options) => {
@@ -725,6 +757,17 @@ program
         console.log(`  machine_id = ${options.machineName}`);
         changed = true;
       }
+      if (options.aiProvider) {
+        hasAction = true;
+        const validProviders = ["cloudflare", "anthropic", "claude-code", "auto"];
+        if (!validProviders.includes(options.aiProvider)) {
+          console.log(`  ❌ 유효한 값: ${validProviders.join(", ")}`);
+        } else {
+          await storage.setConfig("ai_provider", options.aiProvider);
+          console.log(`  ai_provider = ${options.aiProvider}`);
+          changed = true;
+        }
+      }
       if (options.setupD1) {
         hasAction = true;
         console.log("  D1 설정: sincenety config --d1-token <API_TOKEN>");
@@ -791,6 +834,7 @@ program
     const storage = new SqlJsAdapter();
     try {
       await storage.initialize();
+      await requireSetup(storage);
 
       const { loadD1Client, pushToD1, pullConfigFromD1, getSyncStatus, getAutoMachineId } = await import("./cloud/sync.js");
       const { ensureD1Schema } = await import("./cloud/d1-schema.js");

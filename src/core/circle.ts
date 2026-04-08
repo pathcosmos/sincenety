@@ -143,7 +143,7 @@ export async function finalizePreviousReports(
  */
 export async function circleJson(
   storage: StorageAdapter,
-  options?: CircleOptions,
+  options?: CircleOptions & { summarize?: boolean },
 ): Promise<{ dates: string[]; sessions: Record<string, unknown[]> }> {
   const airResult = await runAir(storage, options);
   await finalizePreviousReports(storage, new Date());
@@ -160,6 +160,39 @@ export async function circleJson(
       }
     } else {
       sessions[dateStr] = [];
+    }
+  }
+
+  // --summarize: Workers AI로 세션 요약을 JSON에 포함
+  if (options?.summarize) {
+    const { loadAiProviderConfig } = await import("./ai-provider.js");
+    const aiConfig = await loadAiProviderConfig(storage);
+    if (aiConfig.accountId && aiConfig.apiToken) {
+      const { summarizeSession: cfSummarize, generateOverview } = await import("../cloud/cf-ai.js");
+      const cfConfig: CfAiConfig = { accountId: aiConfig.accountId, apiToken: aiConfig.apiToken };
+
+      for (const dateStr of airResult.changedDates) {
+        const dateSessions = sessions[dateStr] as any[];
+        if (!dateSessions?.length) continue;
+
+        const summaries: any[] = [];
+        for (const s of dateSessions) {
+          const turns = s.conversationTurns ?? [];
+          if (turns.length === 0) continue;
+          const summary = await cfSummarize(cfConfig, s.projectName ?? "", turns);
+          if (summary) {
+            s.aiSummary = summary;
+            summaries.push({ ...summary, sessionId: s.sessionId, projectName: s.projectName });
+          }
+        }
+
+        if (summaries.length > 0) {
+          const overview = await generateOverview(cfConfig, dateStr, summaries);
+          // overview를 최상위에 첨부
+          (sessions as any)[`${dateStr}_overview`] = overview;
+        }
+        console.log(`  🤖 ${dateStr} AI 요약 완료 (${summaries.length}세션, Workers AI)`);
+      }
     }
   }
 
@@ -266,6 +299,10 @@ export async function autoSummarize(
   let summarized = 0;
 
   for (const date of changedDates) {
+    // 이미 요약된 날짜는 스킵 (SKILL.md circle --save 등으로 저장된 경우)
+    const existingReport = await storage.getDailyReport(date, "daily");
+    if (existingReport?.summaryJson) continue;
+
     const report = await storage.getGatherReportByDate(date);
     if (!report?.reportJson) continue;
 
@@ -320,13 +357,13 @@ export async function autoSummarize(
  */
 export async function runCircle(
   storage: StorageAdapter,
-  options?: CircleOptions & { json?: boolean; save?: boolean },
+  options?: CircleOptions & { json?: boolean; save?: boolean; skipAutoSummarize?: boolean },
 ): Promise<CircleResult> {
   const airResult = await runAir(storage, options);
   const finalized = await finalizePreviousReports(storage, new Date());
 
   // Auto-summarize with Cloudflare AI (when not using SKILL.md flow)
-  if (!options?.json && !options?.save) {
+  if (!options?.json && !options?.save && !options?.skipAutoSummarize) {
     const summarized = await autoSummarize(storage, airResult.changedDates);
     if (summarized > 0) {
       console.log(`  🤖 Cloudflare AI: ${summarized}일 요약 완료`);

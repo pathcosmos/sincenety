@@ -19,19 +19,28 @@ Google Calendar MCP가 사용 가능하면 (`gcal_list_events` 호출 성공):
 3. 감지된 날짜를 자동 등록: `sincenety config --vacation YYYY-MM-DD --vacation-type vacation`
 4. 이미 등록된 날짜는 스킵
 
-### 1단계: 데이터 수집 + 요약 필요 데이터 출력
+### 1단계: AI provider 확인 + 데이터 수집
 
+먼저 `sincenety config` 출력에서 `ai_provider` 값을 확인합니다.
+
+**cloudflare인 경우** (Workers AI가 요약 생성):
+```bash
+sincenety circle --json --summarize
+```
+Workers AI가 각 세션을 요약하여 `aiSummary` 필드에 포함합니다. → 2단계 스킵, 바로 3단계로.
+
+**그 외 (auto, anthropic, 미설정)** (Claude Code가 직접 요약):
 ```bash
 sincenety circle --json
 ```
-
 내부적으로 `air`(데이터 수집)를 자동 실행한 뒤, 요약이 필요한 날짜의 세션 데이터를 JSON으로 출력합니다.
-자동 백필: 마지막 실행 이후 빠진 날짜도 자동으로 수집합니다.
-각 세션에 `conversationTurns` (사용자 입력 + 어시스턴트 응답 쌍)이 포함됩니다.
+각 세션에 `conversationTurns` (사용자 입력 + 어시스턴트 응답 쌍)이 포함됩니다. → 2단계에서 직접 요약.
 
 ### 2단계: AI 요약 생성
 
-1단계 JSON의 각 날짜별 세션 `conversationTurns`를 분석하여 **직접 요약을 생성**합니다.
+**`--summarize` 사용 시**: 1단계 JSON에 이미 `aiSummary`가 포함되어 있습니다. 각 세션의 `aiSummary`를 사용하여 3단계 JSON을 구성합니다. overview는 `{날짜}_overview` 키에 포함되어 있습니다.
+
+**Claude Code 직접 분석 시**: 1단계 JSON의 각 날짜별 세션 `conversationTurns`를 분석하여 **직접 요약을 생성**합니다.
 사용자 입력과 어시스턴트 응답을 **함께** 분석하여:
 
 - **topic**: 핵심 주제 (20자 이내)

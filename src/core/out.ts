@@ -152,6 +152,7 @@ export async function runOut(
   const result: OutResult = { sent: 0, skipped: 0, errors: 0, entries: [] };
 
   // 1. circle 실행으로 데이터 최신화
+  // autoSummarize 내부에서 기존 daily_report가 있으면 스킵하므로 이중 요약 방지됨
   await runCircle(storage);
 
   const today = new Date();

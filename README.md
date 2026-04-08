@@ -86,22 +86,30 @@ No need to remember to start/stop tracking. `sincenety` parses `~/.claude/` data
 
 ### AI Summarization Engine
 
-Automatic AI-powered summaries with a 4-tier priority system:
+Unified AI provider system with configurable routing:
 
-```
-1. Claude Code (SKILL.md) → Claude Code summarizes directly (best quality)
-2. D1 token present     → Cloudflare Workers AI (Qwen3-30B) automatic
-3. ANTHROPIC_API_KEY     → Claude API
-4. None                  → Heuristic fallback
+| Environment | AI Provider | Control |
+|-------------|------------|---------|
+| **CLI** (cron, terminal) | Workers AI (always) | D1 토큰만 있으면 자동 |
+| **Claude Code** (`/sincenety`) | User's choice | `ai_provider` 설정 |
+
+```bash
+# AI provider 설정 (Claude Code 환경에서의 동작 제어)
+sincenety config --ai-provider cloudflare   # Workers AI 사용
+sincenety config --ai-provider anthropic    # Claude API 사용
+sincenety config --ai-provider auto         # 자동 감지 (기본값)
+
+# 현재 설정 확인
+sincenety config
+# → AI 요약: ai_provider = auto (auto → cloudflare)
 ```
 
 - **Cloudflare Workers AI (Qwen3-30B)** for Korean text summarization
 - D1 token only needed — no separate API key required
 - `circle` auto-summarizes: per-session topic/outcome/flow/significance + daily overview
+- `circle --json --summarize`: Workers AI summaries included in JSON output (for SKILL.md)
 - Free tier: 10,000 neurons/day (sufficient for personal use, ~300 summaries/day)
-- Monthly cost ~$0.02 (effectively free)
-
-When running inside Claude Code, the SKILL.md integration provides the highest quality summaries. Outside Claude Code, if a D1 token is configured, Workers AI kicks in automatically.
+- Heuristic fallback when no AI provider is available
 
 ### Email AI Summary Integration
 
@@ -110,9 +118,23 @@ Email reports include AI-generated summaries from `daily_reports`:
 - **Per-session mapping**: `daily_reports` wrapUp data maps to each session's topic/outcome/flow/significance
 - **Gmail 102KB clip prevention**: actions capped at 5 per session, text length optimized to stay under Gmail's clipping threshold
 
-### First-Run Setup Reminder
+### Required Setup (Mandatory)
 
-Every 5th run, if email is not configured, sincenety displays a friendly reminder to run `config --setup`. Non-blocking — the tool works fully without email configuration.
+sincenety requires **two configurations** before any command can run:
+
+1. **D1 Cloud Sync** — Cloudflare API token (enables Workers AI + cloud sync)
+2. **Email Delivery** — SMTP or Resend (enables report email delivery)
+
+```bash
+# Step 1: D1 token (auto-detects account, creates DB, enables Workers AI)
+sincenety config --d1-token <API_TOKEN>
+
+# Step 2: Email setup (interactive wizard)
+sincenety config --setup
+# → Gmail app password: https://myaccount.google.com/apppasswords
+```
+
+All commands (`air`, `circle`, `out`, `sync`, etc.) will refuse to run until both are configured. Only `config` is exempt.
 
 ### Vacation Management
 
@@ -223,6 +245,53 @@ npm install && npm run build
 npm link
 ```
 
+## Quick Start — Required Setup
+
+> **Both steps are mandatory.** All commands except `config` will refuse to run until setup is complete.
+
+### Step 1: Cloudflare API Token
+
+Create a token at [dash.cloudflare.com/profile/api-tokens](https://dash.cloudflare.com/profile/api-tokens) with these permissions:
+
+| Permission | Access | Purpose |
+|-----------|--------|---------|
+| Account / **D1** | **Edit** | DB creation + read/write |
+| Account / **Workers AI** | **Read** | AI summarization (Qwen3-30B) |
+| Account / **Account Settings** | **Read** | Account auto-detection |
+
+```bash
+sincenety config --d1-token <YOUR_API_TOKEN>
+# ✅ Account auto-detected
+# ✅ D1 database auto-created
+# ✅ Workers AI enabled
+# ✅ Schema setup complete
+```
+
+### Step 2: Email (Gmail SMTP)
+
+1. Generate an app password at [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords)
+2. Run the setup wizard:
+
+```bash
+sincenety config --setup
+# Select "1) Gmail SMTP"
+# Enter your Gmail address and app password
+# ✅ Connection test runs automatically
+```
+
+Or set manually:
+```bash
+sincenety config --email you@gmail.com --smtp-user you@gmail.com --smtp-pass
+```
+
+### Verify
+
+```bash
+sincenety config
+# Shows all settings with ✅/❌ status
+# AI 요약: ai_provider = auto (auto → cloudflare)
+```
+
 ## Usage
 
 ### air — Collect Work Records
@@ -247,6 +316,9 @@ sincenety circle
 # Output session data as JSON for AI summary (SKILL.md integration)
 sincenety circle --json
 
+# Output with Workers AI summaries included (for SKILL.md cloudflare mode)
+sincenety circle --json --summarize
+
 # Save AI-generated summary to DB (stdin JSON)
 sincenety circle --save < summary.json
 sincenety circle --save --type weekly < weekly_summary.json
@@ -268,6 +340,11 @@ sincenety config --smtp-user sender@gmail.com
 sincenety config --smtp-pass       # Prompted securely
 sincenety config --provider resend
 sincenety config --resend-key rk_...
+
+# AI provider (Claude Code 환경 제어)
+sincenety config --ai-provider cloudflare   # Workers AI
+sincenety config --ai-provider anthropic    # Claude API
+sincenety config --ai-provider auto         # Auto-detect (default)
 
 # Vacation management
 sincenety config --vacation 2026-04-10 2026-04-11
@@ -389,7 +466,8 @@ sincenety/
 │   │   ├── circle.ts           # Phase 2: LLM summary pipeline (finalization + save)
 │   │   ├── out.ts              # Phase 3: smart email dispatch (out/outd/outw/outm)
 │   │   ├── gatherer.ts         # Core gathering logic (parse → group → store)
-│   │   └── summarizer.ts       # Claude API summarization + heuristic fallback
+│   │   ├── summarizer.ts       # AI summarization router (Workers AI / Claude API / heuristic)
+│   │   └── ai-provider.ts      # AI provider detection & routing (cloudflare/anthropic/claude-code)
 │   ├── parser/
 │   │   ├── history.ts          # ~/.claude/history.jsonl streaming parser
 │   │   └── session-jsonl.ts    # Session JSONL parser (tokens/model/timing/turns)
@@ -554,6 +632,8 @@ node dist/cli.js     # Direct execution
 - [x] Cloudflare Workers AI integration (Qwen3-30B summarization)
 - [x] Auto machine ID (hardware-based, cross-platform)
 - [x] Token-only D1 setup (account/database auto-detection)
+- [x] Unified AI provider routing (cloudflare/anthropic/claude-code/heuristic)
+- [x] Mandatory setup guard (D1 + SMTP required before any command)
 - [ ] Passphrase encryption option
 - [ ] Similar task matching (TF-IDF)
 - [ ] External DB connectors (MariaDB/PostgreSQL)

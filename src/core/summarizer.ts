@@ -17,6 +17,8 @@ export interface SessionSummary {
   flow: string;
   /** 이 작업의 의미/중요도 */
   significance: string;
+  /** 다음에 이어서 할 작업 */
+  nextSteps?: string;
 }
 
 interface Turn {
@@ -227,6 +229,28 @@ function summarizeHeuristic(
   };
 }
 
+// ─── Workers AI 경로 ─────────────────────────────────
+
+async function summarizeWithWorkersAI(
+  session: SessionGroup,
+  turns: Turn[],
+  storage: StorageAdapter,
+): Promise<SessionSummary | null> {
+  const { loadAiProviderConfig } = await import("./ai-provider.js");
+  const config = await loadAiProviderConfig(storage);
+  if (!config.accountId || !config.apiToken) return null;
+
+  const { summarizeSession: cfSummarize } = await import("../cloud/cf-ai.js");
+  const cfConfig = { accountId: config.accountId, apiToken: config.apiToken };
+
+  const cfTurns = turns.map((t) => ({
+    userInput: t.userInput,
+    assistantOutput: t.assistantOutput,
+  }));
+
+  return cfSummarize(cfConfig, session.projectName, cfTurns);
+}
+
 // ─── Public API ───────────────────────────────────────
 
 export async function summarizeSession(
@@ -235,11 +259,20 @@ export async function summarizeSession(
 ): Promise<SessionSummary> {
   const turns = filterTurns(session.conversationTurns ?? []);
 
-  // Claude API 시도
-  const aiSummary = await summarizeWithClaude(session, turns, storage);
-  if (aiSummary) return aiSummary;
+  if (storage) {
+    const { resolveAiProvider } = await import("./ai-provider.js");
+    const provider = await resolveAiProvider(storage);
 
-  // fallback: 대화 턴 기반 헬리스틱
+    if (provider === "cloudflare") {
+      const aiSummary = await summarizeWithWorkersAI(session, turns, storage);
+      if (aiSummary) return aiSummary;
+    } else if (provider === "anthropic") {
+      const aiSummary = await summarizeWithClaude(session, turns, storage);
+      if (aiSummary) return aiSummary;
+    }
+    // "claude-code" | "heuristic" → fallthrough to heuristic
+  }
+
   return summarizeHeuristic(session, turns);
 }
 
@@ -249,18 +282,22 @@ export async function summarizeSessions(
 ): Promise<Map<string, SessionSummary>> {
   const map = new Map<string, SessionSummary>();
 
-  // API 키 확인
-  const apiKey = await getApiKey(storage);
-  if (apiKey) {
-    // API 사용 시 병렬 처리 (세션별 독립)
+  // provider 기반 병렬/순차 결정
+  let useAi = false;
+  if (storage) {
+    const { resolveAiProvider } = await import("./ai-provider.js");
+    const provider = await resolveAiProvider(storage);
+    useAi = provider === "cloudflare" || provider === "anthropic";
+  }
+
+  if (useAi) {
     const results = await Promise.all(
       sessions.map((s) => summarizeSession(s, storage)),
     );
     sessions.forEach((s, i) => map.set(s.sessionId, results[i]));
   } else {
-    // 헬리스틱은 순차 (빠르므로 병렬 불필요)
     for (const s of sessions) {
-      map.set(s.sessionId, await summarizeSession(s));
+      map.set(s.sessionId, await summarizeSession(s, storage));
     }
   }
 

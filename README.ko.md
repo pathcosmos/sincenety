@@ -89,22 +89,26 @@ $ sincenety circle
 
 ### AI 요약 엔진
 
-4단계 우선순위 시스템으로 자동 AI 요약:
+통합 AI provider 시스템으로 환경별 자동 라우팅:
 
-```
-1. Claude Code 안 (SKILL.md) → Claude Code가 직접 요약 (최고 품질)
-2. D1 토큰 있음            → Cloudflare Workers AI (Qwen3-30B) 자동
-3. ANTHROPIC_API_KEY       → Claude API
-4. 없음                    → 휴리스틱 fallback
+| 환경 | AI Provider | 제어 |
+|------|------------|------|
+| **CLI** (cron, 터미널) | Workers AI (항상) | D1 토큰만 있으면 자동 |
+| **Claude Code** (`/sincenety`) | 사용자 선택 | `ai_provider` 설정 |
+
+```bash
+# AI provider 설정 (Claude Code 환경에서의 동작 제어)
+sincenety config --ai-provider cloudflare   # Workers AI 사용
+sincenety config --ai-provider anthropic    # Claude API 사용
+sincenety config --ai-provider auto         # 자동 감지 (기본값)
 ```
 
 - **Cloudflare Workers AI (Qwen3-30B)** 한국어 텍스트 요약 특화
 - D1 토큰만 있으면 자동 활성화 — 별도 API 키 불필요
 - `circle` 실행 시 자동 요약: 세션별 topic/outcome/flow/significance + 일일 overview
+- `circle --json --summarize`: Workers AI 요약을 JSON에 포함 (SKILL.md cloudflare 모드)
 - 무료 tier: 10,000 neurons/일 (개인 사용 충분, 하루 ~300회 요약 가능)
-- 월간 비용 ~$0.02 (사실상 무료)
-
-Claude Code 안에서 실행 시 SKILL.md 연동으로 최고 품질 요약. Claude Code 밖에서는 D1 토큰이 설정되어 있으면 Workers AI가 자동으로 동작합니다.
+- AI provider 미설정 시 휴리스틱 fallback
 
 ### 이메일 AI 요약 통합
 
@@ -113,9 +117,23 @@ Claude Code 안에서 실행 시 SKILL.md 연동으로 최고 품질 요약. Cla
 - **세션별 매핑**: `daily_reports` wrapUp 데이터가 각 세션의 topic/outcome/flow/significance에 매핑
 - **Gmail 102KB 클립 방지**: 세션당 actions를 최대 5건으로 제한, 텍스트 길이 최적화
 
-### 첫 실행 설정 안내
+### 필수 설정 (Mandatory)
 
-이메일 미설정 시 5회차 실행마다 `config --setup` 안내를 표시합니다. 비차단 — 이메일 없이도 모든 기능이 동작합니다.
+sincenety는 모든 커맨드 실행 전 **두 가지 설정**을 필수로 요구합니다:
+
+1. **D1 클라우드 동기화** — Cloudflare API 토큰 (Workers AI + 클라우드 동기화 활성화)
+2. **이메일 발송** — SMTP 또는 Resend (보고서 이메일 발송)
+
+```bash
+# 1단계: D1 토큰 (계정 자동 감지, DB 생성, Workers AI 활성화)
+sincenety config --d1-token <API_TOKEN>
+
+# 2단계: 이메일 설정 (대화형 위저드)
+sincenety config --setup
+# → Gmail 앱 비밀번호: https://myaccount.google.com/apppasswords
+```
+
+미설정 시 `config` 외 모든 커맨드가 차단됩니다.
 
 ### 휴가 관리
 
@@ -228,6 +246,52 @@ npm install && npm run build
 npm link
 ```
 
+### 필수 초기 설정
+
+> **두 단계 모두 필수입니다.** 설정 완료 전에는 `config` 외 모든 커맨드가 차단됩니다.
+
+**1단계: Cloudflare API 토큰**
+
+[dash.cloudflare.com/profile/api-tokens](https://dash.cloudflare.com/profile/api-tokens) 에서 토큰 생성:
+
+| 권한 | 액세스 | 용도 |
+|------|--------|------|
+| 계정 / **D1** | **Edit** | DB 생성 + 읽기/쓰기 |
+| 계정 / **Workers AI** | **Read** | AI 요약 (Qwen3-30B) |
+| 계정 / **Account Settings** | **Read** | 계정 자동 탐지 |
+
+```bash
+sincenety config --d1-token <API_TOKEN>
+# ✅ 계정 자동 감지
+# ✅ D1 데이터베이스 자동 생성
+# ✅ Workers AI 활성화
+# ✅ 스키마 세팅 완료
+```
+
+**2단계: 이메일 (Gmail SMTP)**
+
+1. [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords) 에서 앱 비밀번호 생성
+2. 설정 위저드 실행:
+
+```bash
+sincenety config --setup
+# "1) Gmail SMTP" 선택
+# Gmail 주소, 앱 비밀번호 입력
+# ✅ 연결 테스트 자동 실행
+```
+
+또는 수동 설정:
+```bash
+sincenety config --email you@gmail.com --smtp-user you@gmail.com --smtp-pass
+```
+
+**설정 확인:**
+```bash
+sincenety config
+# 모든 설정을 ✅/❌ 상태로 표시
+# AI 요약: ai_provider = auto (auto → cloudflare)
+```
+
 ### air — 기록 수집
 
 ```bash
@@ -249,6 +313,9 @@ sincenety circle
 
 # AI 요약용 세션 데이터 JSON 출력 (SKILL.md 연동)
 sincenety circle --json
+
+# Workers AI 요약 포함 JSON 출력 (SKILL.md cloudflare 모드)
+sincenety circle --json --summarize
 
 # AI가 생성한 요약을 DB에 저장 (stdin JSON)
 sincenety circle --save < summary.json
@@ -397,7 +464,8 @@ sincenety/
 │   │   ├── circle.ts           # Phase 2: LLM 요약 파이프라인 (finalization + 저장)
 │   │   ├── out.ts              # Phase 3: 스마트 이메일 발신 (out/outd/outw/outm)
 │   │   ├── gatherer.ts         # 갈무리 핵심 로직 (파싱→그룹핑→저장)
-│   │   └── summarizer.ts       # AI 요약 (Claude API + 휴리스틱 fallback)
+│   │   ├── summarizer.ts       # AI 요약 라우터 (Workers AI / Claude API / 휴리스틱)
+│   │   └── ai-provider.ts      # AI provider 감지 및 라우팅 (cloudflare/anthropic/claude-code)
 │   ├── parser/
 │   │   ├── history.ts          # ~/.claude/history.jsonl 스트리밍 파서
 │   │   └── session-jsonl.ts    # 세션 JSONL 파서 (토큰/모델/타이밍/대화턴 추출)
@@ -718,6 +786,8 @@ CLI를 7개 명령에서 3단계 파이프라인으로 전면 재구성:
 - [x] Cloudflare Workers AI integration (Qwen3-30B 요약)
 - [x] Auto machine ID (하드웨어 기반, 크로스플랫폼)
 - [x] Token-only D1 setup (계정/DB 자동 감지)
+- [x] 통합 AI provider 라우팅 (cloudflare/anthropic/claude-code/heuristic)
+- [x] 필수 설정 가드 (D1 + SMTP 미설정 시 커맨드 차단)
 - [ ] passphrase 설정 기능 완성
 - [ ] 유사 작업 매칭 (TF-IDF 기반)
 - [ ] MariaDB/PostgreSQL 외부 DB 연결

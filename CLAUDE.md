@@ -102,7 +102,8 @@ sincenety/
 │   ├── cli.ts                    # CLI 진입점 (commander, 7개 서브커맨드)
 │   ├── core/
 │   │   ├── gatherer.ts           # 갈무리 핵심 로직 (파싱 → 그룹핑 → 저장)
-│   │   └── summarizer.ts         # 세션 요약 생성 (Claude API + 휴리스틱 fallback)
+│   │   ├── summarizer.ts         # 세션 요약 라우터 (Workers AI / Claude API / 휴리스틱)
+│   │   └── ai-provider.ts       # AI provider 감지 및 라우팅 (cloudflare/anthropic/claude-code)
 │   ├── parser/
 │   │   ├── history.ts            # history.jsonl readline 스트리밍 파서
 │   │   └── session-jsonl.ts      # 세션 JSONL 파서 (conversationTurns 포함)
