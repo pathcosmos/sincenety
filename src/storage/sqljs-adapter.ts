@@ -9,6 +9,8 @@ import type {
   SessionRecord,
   GatherReport,
   DailyReport,
+  VacationRecord,
+  EmailLog,
   StorageAdapter,
 } from "./adapter.js";
 
@@ -112,6 +114,46 @@ const MIGRATION_V1_TO_V2 = [
   "ALTER TABLE sessions ADD COLUMN model TEXT",
 ];
 
+const SCHEMA_V4 = `
+CREATE TABLE IF NOT EXISTS email_logs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  sent_at INTEGER NOT NULL,
+  report_type TEXT NOT NULL,
+  report_date TEXT NOT NULL,
+  period_from TEXT NOT NULL,
+  period_to TEXT NOT NULL,
+  recipient TEXT NOT NULL,
+  subject TEXT NOT NULL,
+  body_html TEXT,
+  body_text TEXT,
+  provider TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'sent',
+  error_message TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_email_logs_sent ON email_logs(sent_at);
+CREATE INDEX IF NOT EXISTS idx_email_logs_report ON email_logs(report_date, report_type);
+
+CREATE TABLE IF NOT EXISTS vacations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  date TEXT NOT NULL UNIQUE,
+  type TEXT NOT NULL DEFAULT 'vacation',
+  source TEXT NOT NULL DEFAULT 'manual',
+  label TEXT,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_vacations_date ON vacations(date);
+`;
+
+// v3 → v4 마이그레이션: 새 컬럼 추가
+const MIGRATION_V3_TO_V4 = [
+  "ALTER TABLE gather_reports ADD COLUMN report_date TEXT",
+  "ALTER TABLE gather_reports ADD COLUMN data_hash TEXT",
+  "ALTER TABLE gather_reports ADD COLUMN updated_at INTEGER",
+  "ALTER TABLE daily_reports ADD COLUMN status TEXT",
+  "ALTER TABLE daily_reports ADD COLUMN progress_label TEXT",
+  "ALTER TABLE daily_reports ADD COLUMN data_hash TEXT",
+];
+
 export class SqlJsAdapter implements StorageAdapter {
   private db: Database | null = null;
   private dbPath: string;
@@ -208,6 +250,41 @@ export class SqlJsAdapter implements StorageAdapter {
     } else {
       // 이미 v3 — 안전하게 CREATE IF NOT EXISTS 실행
       this.db!.run(SCHEMA_V3);
+    }
+
+    // v4: email_logs, vacations 테이블 + gather_reports/daily_reports 새 컬럼
+    if (version < 4) {
+      // 기존 테이블에 컬럼 추가
+      for (const sql of MIGRATION_V3_TO_V4) {
+        try {
+          this.db!.run(sql);
+        } catch {
+          // 이미 존재하는 컬럼은 무시
+        }
+      }
+
+      // 새 테이블 + 인덱스
+      this.db!.run(SCHEMA_V4);
+
+      // gather_reports의 report_date 유니크 인덱스
+      // SQLite에서 UNIQUE 인덱스의 NULL은 항상 고유하므로 legacy(NULL) 레코드도 안전
+      this.db!.run(
+        `CREATE UNIQUE INDEX IF NOT EXISTS idx_gather_report_date
+         ON gather_reports(report_date)`
+      );
+
+      this.db!.run(
+        `INSERT OR REPLACE INTO config (key, value, updated_at)
+         VALUES ('schema_version', '4', ?)`,
+        [Date.now()]
+      );
+    } else {
+      // 이미 v4 — 안전하게 CREATE IF NOT EXISTS 실행
+      this.db!.run(SCHEMA_V4);
+      this.db!.run(
+        `CREATE UNIQUE INDEX IF NOT EXISTS idx_gather_report_date
+         ON gather_reports(report_date)`
+      );
     }
   }
 
@@ -333,20 +410,57 @@ export class SqlJsAdapter implements StorageAdapter {
 
   async saveGatherReport(report: GatherReport): Promise<number> {
     this.ensureDb();
-    this.db!.run(
-      `INSERT INTO gather_reports (
-        gathered_at, from_timestamp, to_timestamp,
-        session_count, total_messages, total_input_tokens, total_output_tokens,
-        report_markdown, report_json, emailed_at, email_to
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        report.gatheredAt, report.fromTimestamp, report.toTimestamp,
-        report.sessionCount, report.totalMessages,
-        report.totalInputTokens, report.totalOutputTokens,
-        report.reportMarkdown, report.reportJson,
-        report.emailedAt, report.emailTo,
-      ]
-    );
+
+    if (report.reportDate) {
+      // v4: date-based upsert
+      this.db!.run(
+        `INSERT INTO gather_reports (
+          gathered_at, from_timestamp, to_timestamp,
+          session_count, total_messages, total_input_tokens, total_output_tokens,
+          report_markdown, report_json, emailed_at, email_to,
+          report_date, data_hash, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(report_date) DO UPDATE SET
+          gathered_at = excluded.gathered_at,
+          from_timestamp = excluded.from_timestamp,
+          to_timestamp = excluded.to_timestamp,
+          session_count = excluded.session_count,
+          total_messages = excluded.total_messages,
+          total_input_tokens = excluded.total_input_tokens,
+          total_output_tokens = excluded.total_output_tokens,
+          report_markdown = excluded.report_markdown,
+          report_json = excluded.report_json,
+          emailed_at = excluded.emailed_at,
+          email_to = excluded.email_to,
+          data_hash = excluded.data_hash,
+          updated_at = excluded.updated_at`,
+        [
+          report.gatheredAt, report.fromTimestamp, report.toTimestamp,
+          report.sessionCount, report.totalMessages,
+          report.totalInputTokens, report.totalOutputTokens,
+          report.reportMarkdown, report.reportJson,
+          report.emailedAt, report.emailTo,
+          report.reportDate, report.dataHash, report.updatedAt,
+        ]
+      );
+    } else {
+      // legacy insert (v3 compat)
+      this.db!.run(
+        `INSERT INTO gather_reports (
+          gathered_at, from_timestamp, to_timestamp,
+          session_count, total_messages, total_input_tokens, total_output_tokens,
+          report_markdown, report_json, emailed_at, email_to
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          report.gatheredAt, report.fromTimestamp, report.toTimestamp,
+          report.sessionCount, report.totalMessages,
+          report.totalInputTokens, report.totalOutputTokens,
+          report.reportMarkdown, report.reportJson,
+          report.emailedAt, report.emailTo,
+        ]
+      );
+    }
+
     // 마지막 삽입 ID
     const stmt = this.db!.prepare("SELECT last_insert_rowid() as id");
     stmt.step();
@@ -414,7 +528,25 @@ export class SqlJsAdapter implements StorageAdapter {
       reportJson: (row.report_json as string) ?? "",
       emailedAt: (row.emailed_at as number) ?? null,
       emailTo: (row.email_to as string) ?? null,
+      reportDate: (row.report_date as string) ?? null,
+      dataHash: (row.data_hash as string) ?? null,
+      updatedAt: (row.updated_at as number) ?? null,
     };
+  }
+
+  async getGatherReportByDate(date: string): Promise<GatherReport | null> {
+    this.ensureDb();
+    const stmt = this.db!.prepare(
+      "SELECT * FROM gather_reports WHERE report_date = ? LIMIT 1"
+    );
+    stmt.bind([date]);
+    if (stmt.step()) {
+      const report = this.rowToGatherReport(stmt.getAsObject());
+      stmt.free();
+      return report;
+    }
+    stmt.free();
+    return null;
   }
 
   // ── 설정 ──
@@ -487,6 +619,9 @@ export class SqlJsAdapter implements StorageAdapter {
       createdAt: row.created_at as number,
       emailedAt: (row.emailed_at as number) ?? null,
       emailTo: (row.email_to as string) ?? null,
+      status: (row.status as string) ?? null,
+      progressLabel: (row.progress_label as string) ?? null,
+      dataHash: (row.data_hash as string) ?? null,
     };
   }
 
@@ -496,14 +631,16 @@ export class SqlJsAdapter implements StorageAdapter {
       `INSERT OR REPLACE INTO daily_reports
        (report_date, report_type, period_from, period_to,
         session_count, total_messages, total_tokens,
-        summary_json, overview, report_markdown, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        summary_json, overview, report_markdown, created_at,
+        status, progress_label, data_hash)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         report.reportDate, report.reportType,
         report.periodFrom, report.periodTo,
         report.sessionCount, report.totalMessages, report.totalTokens,
         report.summaryJson, report.overview, report.reportMarkdown,
         report.createdAt,
+        report.status ?? null, report.progressLabel ?? null, report.dataHash ?? null,
       ]
     );
     const idStmt = this.db!.prepare("SELECT last_insert_rowid() as id");
@@ -567,6 +704,112 @@ export class SqlJsAdapter implements StorageAdapter {
       [emailedAt, emailTo, reportId]
     );
     await this.save();
+  }
+
+  async updateDailyReportStatus(
+    reportDate: string,
+    reportType: string,
+    status: string,
+    progressLabel?: string
+  ): Promise<void> {
+    this.ensureDb();
+    this.db!.run(
+      `UPDATE daily_reports SET status = ?, progress_label = ?
+       WHERE report_date = ? AND report_type = ?`,
+      [status, progressLabel ?? null, reportDate, reportType]
+    );
+    await this.save();
+  }
+
+  // ── 휴가 ──
+
+  async saveVacation(vacation: VacationRecord): Promise<void> {
+    this.ensureDb();
+    this.db!.run(
+      `INSERT OR REPLACE INTO vacations (date, type, source, label, created_at)
+       VALUES (?, ?, ?, ?, ?)`,
+      [vacation.date, vacation.type, vacation.source, vacation.label, vacation.createdAt]
+    );
+    await this.save();
+  }
+
+  async getVacationsByRange(from: string, to: string): Promise<VacationRecord[]> {
+    this.ensureDb();
+    const stmt = this.db!.prepare(
+      `SELECT * FROM vacations
+       WHERE date >= ? AND date <= ?
+       ORDER BY date ASC`
+    );
+    stmt.bind([from, to]);
+    const results: VacationRecord[] = [];
+    while (stmt.step()) {
+      const row = stmt.getAsObject() as Record<string, unknown>;
+      results.push({
+        id: row.id as number,
+        date: row.date as string,
+        type: row.type as string,
+        source: row.source as string,
+        label: (row.label as string) ?? null,
+        createdAt: row.created_at as number,
+      });
+    }
+    stmt.free();
+    return results;
+  }
+
+  async deleteVacation(date: string): Promise<void> {
+    this.ensureDb();
+    this.db!.run("DELETE FROM vacations WHERE date = ?", [date]);
+    await this.save();
+  }
+
+  // ── 이메일 로그 ──
+
+  async saveEmailLog(log: EmailLog): Promise<void> {
+    this.ensureDb();
+    this.db!.run(
+      `INSERT INTO email_logs (
+        sent_at, report_type, report_date, period_from, period_to,
+        recipient, subject, body_html, body_text,
+        provider, status, error_message
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        log.sentAt, log.reportType, log.reportDate,
+        log.periodFrom, log.periodTo,
+        log.recipient, log.subject, log.bodyHtml, log.bodyText,
+        log.provider, log.status, log.errorMessage,
+      ]
+    );
+    await this.save();
+  }
+
+  async getEmailLogs(limit: number): Promise<EmailLog[]> {
+    this.ensureDb();
+    const stmt = this.db!.prepare(
+      `SELECT * FROM email_logs ORDER BY sent_at DESC LIMIT ?`
+    );
+    stmt.bind([limit]);
+    const results: EmailLog[] = [];
+    while (stmt.step()) {
+      const row = stmt.getAsObject() as Record<string, unknown>;
+      results.push({
+        id: row.id as number,
+        sentAt: row.sent_at as number,
+        reportType: row.report_type as string,
+        reportDate: row.report_date as string,
+        periodFrom: row.period_from as string,
+        periodTo: row.period_to as string,
+        recipient: row.recipient as string,
+        subject: row.subject as string,
+        bodyHtml: (row.body_html as string) ?? "",
+        bodyText: (row.body_text as string) ?? "",
+        provider: row.provider as string,
+        status: row.status as string,
+        errorMessage: (row.error_message as string) ?? null,
+      });
+    }
+    stmt.free();
+    return results;
   }
 
   private ensureDb(): void {

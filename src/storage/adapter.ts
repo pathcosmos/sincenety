@@ -43,6 +43,9 @@ export interface GatherReport {
   reportJson: string;
   emailedAt: number | null;
   emailTo: string | null;
+  reportDate: string | null;    // YYYY-MM-DD for date-based upsert
+  dataHash: string | null;
+  updatedAt: number | null;
 }
 
 export interface DailyReport {
@@ -60,6 +63,34 @@ export interface DailyReport {
   createdAt: number;
   emailedAt: number | null;
   emailTo: string | null;
+  status: string | null;         // "in_progress" | "finalized"
+  progressLabel: string | null;  // "진행중 — 3/7일"
+  dataHash: string | null;       // gather data hash for change detection
+}
+
+export interface VacationRecord {
+  id?: number;
+  date: string;           // YYYY-MM-DD
+  type: string;           // vacation | sick | holiday | half | other
+  source: string;         // manual | gcal_auto
+  label: string | null;
+  createdAt: number;
+}
+
+export interface EmailLog {
+  id?: number;
+  sentAt: number;
+  reportType: string;     // daily | weekly | monthly
+  reportDate: string;
+  periodFrom: string;
+  periodTo: string;
+  recipient: string;
+  subject: string;
+  bodyHtml: string;
+  bodyText: string;
+  provider: string;       // gmail_mcp | resend | gmail_smtp | custom_smtp
+  status: string;         // sent | failed | draft
+  errorMessage: string | null;
 }
 
 export interface StorageAdapter {
@@ -75,6 +106,7 @@ export interface StorageAdapter {
   // 갈무리 리포트
   saveGatherReport(report: GatherReport): Promise<number>;
   getGatherReportsByDate(dateStr: string): Promise<GatherReport[]>;
+  getGatherReportByDate(date: string): Promise<GatherReport | null>;
   getLatestGatherReport(): Promise<GatherReport | null>;
   updateReportEmail(reportId: number, emailedAt: number, emailTo: string): Promise<void>;
 
@@ -84,6 +116,16 @@ export interface StorageAdapter {
   getDailyReportsByRange(from: string, to: string, type?: string): Promise<DailyReport[]>;
   getLatestDailyReport(type?: string): Promise<DailyReport | null>;
   updateDailyReportEmail(reportId: number, emailedAt: number, emailTo: string): Promise<void>;
+  updateDailyReportStatus(reportDate: string, reportType: string, status: string, progressLabel?: string): Promise<void>;
+
+  // 휴가
+  saveVacation(vacation: VacationRecord): Promise<void>;
+  getVacationsByRange(from: string, to: string): Promise<VacationRecord[]>;
+  deleteVacation(date: string): Promise<void>;
+
+  // 이메일 로그
+  saveEmailLog(log: EmailLog): Promise<void>;
+  getEmailLogs(limit: number): Promise<EmailLog[]>;
 
   // 설정
   getConfig(key: string): Promise<string | null>;

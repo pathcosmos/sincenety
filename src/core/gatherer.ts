@@ -149,6 +149,9 @@ async function buildGatherReport(
     ),
     emailedAt: null,
     emailTo: null,
+    reportDate: null,
+    dataHash: null,
+    updatedAt: null,
   };
 }
 

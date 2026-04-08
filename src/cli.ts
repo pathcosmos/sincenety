@@ -408,6 +408,9 @@ program
         createdAt: Date.now(),
         emailedAt: null,
         emailTo: null,
+        status: null,
+        progressLabel: null,
+        dataHash: null,
       });
 
       console.log(`  ✅ ${options.type === "daily" ? "일일" : options.type === "weekly" ? "주간" : "월간"}보고 저장 완료: ${data.date} (${data.sessions.length}세션)`);
