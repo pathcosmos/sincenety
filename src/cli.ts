@@ -486,7 +486,8 @@ program
 
       if (options.setup) {
         hasAction = true;
-        console.log("  setup 위저드는 Plan 3에서 구현됩니다");
+        const { runSetupWizard } = await import("./config/setup-wizard.js");
+        await runSetupWizard(storage);
         return;
       }
 
