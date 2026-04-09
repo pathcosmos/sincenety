@@ -23,7 +23,7 @@ export interface OutOptions {
   /** 터미널에 미리보기만 출력 (발송하지 않음) */
   preview?: boolean;
   /** 갈무리 범위: global(전체) 또는 project(특정 프로젝트만) */
-  scope?: { mode: "global" } | { mode: "project"; path: string };
+  scope?: import("../config/scope.js").ScopeConfig;
 }
 
 export interface OutResultEntry {

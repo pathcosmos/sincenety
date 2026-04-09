@@ -17,9 +17,7 @@ import type { StorageAdapter, GatherReport } from "../storage/adapter.js";
 // Types
 // ---------------------------------------------------------------------------
 
-export type ScopeConfig =
-  | { mode: "global" }
-  | { mode: "project"; path: string };
+import type { ScopeConfig } from "../config/scope.js";
 
 export interface AirOptions {
   historyPath?: string;

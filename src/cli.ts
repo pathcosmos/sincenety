@@ -15,7 +15,7 @@ const program = new Command();
 program
   .name("sincenety")
   .description("Claude Code work session tracker")
-  .version("0.3.0");
+  .version("0.7.0");
 
 // ─── setup reminder ─────────────────────────────────────
 

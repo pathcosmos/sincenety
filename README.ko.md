@@ -826,6 +826,15 @@ CLI를 7개 명령에서 3단계 파이프라인으로 전면 재구성:
 - **`src/util/machine-id.ts`**: 크로스플랫폼 하드웨어 ID 감지
 - **테스트 116개**: 기존 108 + cf-ai/machine-id 8개 추가
 
+### v0.7.0 (2026-04-09) — Scope 선택 + postinstall 셋업 위저드
+
+- **Scope 선택 (Global / Project)**: 전체 프로젝트 추적 또는 특정 프로젝트만 추적 선택 가능 (`~/.sincenety/scope.json`)
+- **postinstall 셋업 위저드**: `npm install -g` 시 대화형 3단계 설정 (scope → D1 토큰 + Cloudflare 권한 가이드 → email)
+- **D1 토큰 가이드 강화**: Cloudflare Custom Token 생성 절차 및 필요 권한(Workers AI Read, D1 Edit, Account Settings Read) 상세 안내
+- **schedule 명령 비활성화**: 향후 재구현 예정
+- **CLI 출력 영문 전환**: setup-wizard, d1-auto-setup 등 사용자 대면 메시지 영문화
+- **신규 파일**: `src/config/scope.ts`, `src/postinstall.ts`
+
 ### v0.6.5 (2026-04-08) — JSON 출력 정합성 수정
 
 - **`--render-only` stdout/stderr 분리**: D1 sync 완료 메시지를 `console.error`로 변경하여 JSON stdout 오염 방지
