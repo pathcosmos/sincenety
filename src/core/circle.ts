@@ -217,11 +217,18 @@ export async function circleSave(
   // DB에서 해당 날짜의 세션 통계 조회
   const dbSessions = await storage.getSessionsByDate(date);
 
-  // 입력 세션과 DB 세션을 sessionId로 머지
+  // 입력 세션과 DB 세션을 sessionId로 머지 (prefix 매칭 폴백으로 잘린 ID 방어)
   const mergedSessions = inputSessions.map((is) => {
-    const dbSession = dbSessions.find((ds) => ds.id === is.sessionId);
+    let dbSession = dbSessions.find((ds) => ds.id === is.sessionId);
+    if (!dbSession && is.sessionId) {
+      dbSession = dbSessions.find((ds) =>
+        ds.id.startsWith(is.sessionId.slice(0, 12)) || is.sessionId.startsWith(ds.id.slice(0, 12)),
+      );
+    }
+    // 실제 DB sessionId로 교정 (잘못된 ID가 들어와도 올바른 ID로 저장)
+    const resolvedId = dbSession?.id ?? is.sessionId;
     return {
-      sessionId: is.sessionId,
+      sessionId: resolvedId,
       projectName: is.projectName ?? dbSession?.projectName ?? "",
       topic: is.topic ?? "",
       outcome: is.outcome ?? "",

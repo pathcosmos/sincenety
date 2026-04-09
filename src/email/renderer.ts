@@ -93,7 +93,16 @@ export async function renderDailyEmail(
       const sessionsJson = JSON.parse(gatherReport.reportJson || "[]");
       sessions = sessionsJson.map((s: Record<string, unknown>): SessionData => {
         const sid = (s.sessionId as string) ?? "";
-        const ai = aiSummaryMap?.get(sid);
+        // 정확 매칭 우선, 실패 시 prefix 매칭 (sessionId 잘림 방어)
+        let ai = aiSummaryMap?.get(sid);
+        if (!ai && aiSummaryMap && sid) {
+          for (const [key, val] of aiSummaryMap) {
+            if (key.startsWith(sid.slice(0, 12)) || sid.startsWith(key.slice(0, 12))) {
+              ai = val;
+              break;
+            }
+          }
+        }
         const wu = ai
           ? { outcome: ai.outcome, significance: ai.significance, flow: ai.flow, nextSteps: ai.nextSteps || undefined }
           : (s.wrapUp as Record<string, string> | undefined)
