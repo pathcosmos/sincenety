@@ -25,10 +25,10 @@ function formatDate(epochMs: number): string {
 
 function formatDuration(startMs: number, endMs: number): string {
   const minutes = Math.floor((endMs - startMs) / 60000);
-  if (minutes < 60) return `${minutes}분`;
+  if (minutes < 60) return `${minutes}m`;
   const h = Math.floor(minutes / 60);
   const m = minutes % 60;
-  return m > 0 ? `${h}시간 ${m}분` : `${h}시간`;
+  return m > 0 ? `${h}h ${m}m` : `${h}h`;
 }
 
 function fmtTokens(n: number): string {
@@ -127,7 +127,7 @@ export function formatGatherReport(result: GatherResult): string {
 
   if (sessions.length === 0) {
     const since = formatTime(fromTimestamp);
-    lines.push(`\n  갈무리할 작업이 없습니다. (${since} 이후 활동 없음)\n`);
+    lines.push(`\n  No sessions to report. (no activity since ${since})\n`);
     return lines.join("\n");
   }
 
@@ -142,25 +142,25 @@ export function formatGatherReport(result: GatherResult): string {
   // 헤더
   lines.push("");
   lines.push(
-    `  📋 ${dateStr} 작업 갈무리 (${fromTime} ~ ${toTime})${isFirstRun ? " [첫 실행]" : ""}`
+    `  📋 ${dateStr} work session report (${fromTime} ~ ${toTime})${isFirstRun ? " [first run]" : ""}`
   );
   lines.push("");
 
   // ─── 요약 테이블 ───
   const summaryRows = [
-    ["총 세션", `${sessions.length}개`],
-    ["총 메시지", `${totalMessages}개`],
-    ["입력 토큰", fmtTokens(totalInput)],
-    ["출력 토큰", fmtTokens(totalOutput)],
-    ["총 토큰", fmtTokens(totalTokens)],
+    ["Total sessions", `${sessions.length}`],
+    ["Total messages", `${totalMessages}`],
+    ["Input tokens", fmtTokens(totalInput)],
+    ["Output tokens", fmtTokens(totalOutput)],
+    ["Total tokens", fmtTokens(totalTokens)],
   ];
 
   const skWidth = Math.max(...summaryRows.map(([k]) => displayWidth(k)));
   const svWidth = Math.max(...summaryRows.map(([, v]) => displayWidth(v)));
 
   const sumCols: TableColumn[] = [
-    { header: "항목", width: skWidth, align: "left" },
-    { header: "값", width: svWidth, align: "right" },
+    { header: "Key", width: skWidth, align: "left" },
+    { header: "Value", width: svWidth, align: "right" },
   ];
 
   lines.push("  " + drawLine(sumCols, "┌", "┬", "┐", "─"));
@@ -201,15 +201,15 @@ export function formatGatherReport(result: GatherResult): string {
 
   const cols: TableColumn[] = [
     { header: "#",        width: Math.max(1, String(rows.length).length), align: "right" },
-    { header: "프로젝트", width: Math.max(8, ...rows.map((r) => displayWidth(r.project))), align: "left" },
-    { header: "시간",     width: Math.max(4, ...rows.map((r) => displayWidth(r.time))), align: "left" },
-    { header: "소요",     width: Math.max(4, ...rows.map((r) => displayWidth(r.duration))), align: "right" },
-    { header: "메시지",   width: Math.max(6, ...rows.map((r) => displayWidth(r.messages))), align: "right" },
-    { header: "사용자",   width: Math.max(6, ...rows.map((r) => displayWidth(r.userMsg))), align: "right" },
-    { header: "어시",     width: Math.max(4, ...rows.map((r) => displayWidth(r.assistMsg))), align: "right" },
-    { header: "도구",     width: Math.max(4, ...rows.map((r) => displayWidth(r.toolCalls))), align: "right" },
-    { header: "토큰",     width: Math.max(4, ...rows.map((r) => displayWidth(r.tokens))), align: "right" },
-    { header: "모델",     width: Math.max(4, ...rows.map((r) => displayWidth(r.model))), align: "left" },
+    { header: "Project",  width: Math.max(8, ...rows.map((r) => displayWidth(r.project))), align: "left" },
+    { header: "Time",     width: Math.max(4, ...rows.map((r) => displayWidth(r.time))), align: "left" },
+    { header: "Duration", width: Math.max(8, ...rows.map((r) => displayWidth(r.duration))), align: "right" },
+    { header: "Messages", width: Math.max(8, ...rows.map((r) => displayWidth(r.messages))), align: "right" },
+    { header: "User",     width: Math.max(4, ...rows.map((r) => displayWidth(r.userMsg))), align: "right" },
+    { header: "Assist",   width: Math.max(6, ...rows.map((r) => displayWidth(r.assistMsg))), align: "right" },
+    { header: "Tools",    width: Math.max(5, ...rows.map((r) => displayWidth(r.toolCalls))), align: "right" },
+    { header: "Tokens",   width: Math.max(6, ...rows.map((r) => displayWidth(r.tokens))), align: "right" },
+    { header: "Model",    width: Math.max(5, ...rows.map((r) => displayWidth(r.model))), align: "left" },
   ];
 
   lines.push("  " + drawLine(cols, "┌", "┬", "┐", "─"));
@@ -235,7 +235,7 @@ export function formatGatherReport(result: GatherResult): string {
 
   // ─── 작업 내용 상세 ───
   lines.push("");
-  lines.push("  📝 세션별 작업 내용");
+  lines.push("  📝 Session details");
   lines.push("  " + "─".repeat(60));
 
   sessions.forEach((s, i) => {
@@ -249,7 +249,7 @@ export function formatGatherReport(result: GatherResult): string {
 
   lines.push("");
   lines.push("  " + "─".repeat(60));
-  lines.push(`  ✅ 갈무리 완료. 기록이 저장되었습니다.`);
+  lines.push(`  ✅ Complete. Records saved.`);
   lines.push("");
 
   return lines.join("\n");

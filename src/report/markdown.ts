@@ -21,10 +21,10 @@ function formatDate(epochMs: number): string {
 }
 
 function formatDuration(minutes: number): string {
-  if (minutes < 60) return `${Math.round(minutes)}분`;
+  if (minutes < 60) return `${Math.round(minutes)} min`;
   const h = Math.floor(minutes / 60);
   const m = Math.round(minutes % 60);
-  return m > 0 ? `${h}시간 ${m}분` : `${h}시간`;
+  return m > 0 ? `${h}h ${m}m` : `${h}h`;
 }
 
 function formatTokens(n: number): string {
@@ -50,21 +50,21 @@ export function generateMarkdownReport(
     (s, g) => s + (g.durationMinutes ?? (g.endedAt - g.startedAt) / 60000), 0
   );
 
-  lines.push(`# 작업 갈무리 — ${dateStr} ${toTime}`);
+  lines.push(`# Work Session Report — ${dateStr} ${toTime}`);
   lines.push("");
-  lines.push("## 요약");
-  lines.push(`- **기간**: ${fromTime} ~ ${toTime}`);
-  lines.push(`- **세션**: ${sessions.length}개`);
-  lines.push(`- **메시지**: ${totalMessages}개`);
+  lines.push("## Summary");
+  lines.push(`- **Period**: ${fromTime} ~ ${toTime}`);
+  lines.push(`- **Sessions**: ${sessions.length}`);
+  lines.push(`- **Messages**: ${totalMessages}`);
   if (totalInput + totalOutput > 0) {
     lines.push(
-      `- **토큰**: 입력 ${formatTokens(totalInput)} / 출력 ${formatTokens(totalOutput)} (합계 ${formatTokens(totalInput + totalOutput)})`
+      `- **Tokens**: in ${formatTokens(totalInput)} / out ${formatTokens(totalOutput)} (total ${formatTokens(totalInput + totalOutput)})`
     );
   }
-  lines.push(`- **작업 시간**: ${formatDuration(totalDuration)}`);
+  lines.push(`- **Duration**: ${formatDuration(totalDuration)}`);
   lines.push("");
 
-  lines.push("## 세션별 상세");
+  lines.push("## Session Details");
   lines.push("");
 
   for (const session of sessions) {
@@ -73,22 +73,22 @@ export function generateMarkdownReport(
     const title = session.title ?? session.summary;
 
     lines.push(`### [${session.projectName}] ${time} (${formatDuration(dur)})`);
-    lines.push(`- **타이틀**: ${title}`);
+    lines.push(`- **Title**: ${title}`);
     if (session.description) {
-      lines.push(`- **설명**: ${session.description}`);
+      lines.push(`- **Description**: ${session.description}`);
     }
     if ((session.inputTokens ?? 0) + (session.outputTokens ?? 0) > 0) {
       lines.push(
-        `- **토큰**: 입력 ${formatTokens(session.inputTokens ?? 0)} / 출력 ${formatTokens(session.outputTokens ?? 0)}`
+        `- **Tokens**: in ${formatTokens(session.inputTokens ?? 0)} / out ${formatTokens(session.outputTokens ?? 0)}`
       );
     }
     lines.push(
-      `- **메시지**: 사용자 ${session.userMessageCount ?? "?"} / AI ${session.assistantMessageCount ?? "?"} (총 ${session.messageCount})`
+      `- **Messages**: user ${session.userMessageCount ?? "?"} / AI ${session.assistantMessageCount ?? "?"} (total ${session.messageCount})`
     );
     if (session.model) {
-      lines.push(`- **모델**: ${session.model}`);
+      lines.push(`- **Model**: ${session.model}`);
     }
-    lines.push(`- **카테고리**: ${session.category ?? session.projectName}`);
+    lines.push(`- **Category**: ${session.category ?? session.projectName}`);
     lines.push("");
   }
 

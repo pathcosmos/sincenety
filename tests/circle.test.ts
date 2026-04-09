@@ -63,12 +63,12 @@ describe("getWeekBoundary", () => {
 describe("getProgressLabel", () => {
   it("returns correct format", () => {
     const label = getProgressLabel("daily", new Date(), 3, 7);
-    expect(label).toBe("진행중 — 3/7일");
+    expect(label).toBe("in progress — 3/7 days");
   });
 
   it("handles zero values", () => {
     const label = getProgressLabel("weekly", new Date(), 0, 5);
-    expect(label).toBe("진행중 — 0/5일");
+    expect(label).toBe("in progress — 0/5 days");
   });
 });
 

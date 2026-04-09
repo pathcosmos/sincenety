@@ -99,7 +99,7 @@ sincenety log --week
 ```
 sincenety/
 ├── src/
-│   ├── cli.ts                    # CLI 진입점 (commander, 7개 서브커맨드)
+│   ├── cli.ts                    # CLI 진입점 (commander, default + 9개 서브커맨드, 영문 출력)
 │   ├── core/
 │   │   ├── gatherer.ts           # 갈무리 핵심 로직 (파싱 → 그룹핑 → 저장)
 │   │   ├── summarizer.ts         # 세션 요약 라우터 (Workers AI / Claude API / 휴리스틱)
@@ -110,7 +110,7 @@ sincenety/
 │   ├── grouper/session.ts        # sessionId+project 그룹핑, 요약 추출
 │   ├── storage/
 │   │   ├── adapter.ts            # StorageAdapter 인터페이스 (DailyReport 포함)
-│   │   └── sqljs-adapter.ts      # sql.js 구현 (암호화 DB, 스키마 v3 자동 마이그레이션)
+│   │   └── sqljs-adapter.ts      # sql.js 구현 (암호화 DB, 스키마 v4 자동 마이그레이션)
 │   ├── encryption/
 │   │   ├── key.ts                # PBKDF2 machine-bound/passphrase 키 파생
 │   │   └── crypto.ts             # AES-256-GCM encrypt/decrypt
@@ -157,17 +157,19 @@ npx .                # 로컬 npx 테스트
 `StorageAdapter` 인터페이스로 DB 교체 가능. 기본은 `SqlJsAdapter` (sql.js WASM SQLite).
 인터페이스에 `DailyReport` 타입 포함 — `saveDailyReport`, `getDailyReport`, `getDailyReportsByRange` 등.
 
-### DB 스키마 (v3) — 5개 테이블
+### DB 스키마 (v4) — 7개 테이블
 
 | 테이블 | 역할 |
 |--------|------|
 | `sessions` | 세션별 작업 기록 (22개 컬럼 — 토큰, 시간, 타이틀, 설명, 모델 등) |
-| `gather_reports` | raw 수집 기록 (CLI 자동 생성, 마크다운 + JSON) |
+| `gather_reports` | raw 수집 기록 (CLI 자동 생성, 마크다운 + JSON, data_hash) |
 | `daily_reports` | AI 요약 보고서 (Claude Code 생성), UNIQUE(report_date, report_type) |
 | `checkpoints` | 갈무리 포인트 (마지막 처리 timestamp) |
 | `config` | 설정 (이메일, SMTP, schema_version 등) |
+| `vacations` | 휴가/휴일 날짜 (date, type, source, label) |
+| `email_logs` | 이메일 발송 기록 |
 
-자동 마이그레이션: v1 → v2 → v3 (applySchema에서 버전 체크)
+자동 마이그레이션: v1 → v2 → v3 → v4 (applySchema에서 버전 체크)
 
 ### 데이터 흐름
 

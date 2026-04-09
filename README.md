@@ -5,47 +5,59 @@
 > **[한국어 문서 (Korean)](./README.ko.md)**
 
 ```
+$ sincenety
+
+  ☁️  D1 sync complete
+  ☁️  D1 sync complete
+  ✅ sincenety complete — 1 sent, 0 skipped
+
 $ sincenety air
 
-  📋 air 갈무리 완료
-     날짜 범위: 3일 (백필 2일)
-     총 세션: 12개
-     변경 날짜: 2일
-     변경: 2026-04-06, 2026-04-07
+  📋 air complete
+     Date range: 3 days (backfill 2 days)
+     Total sessions: 12
+     Changed dates: 2
+     Changed: 2026-04-06, 2026-04-07
 
 $ sincenety circle
 
-  📋 circle 마무리 완료
-     날짜 범위: 3일
-     총 세션: 12개
-     변경 날짜: 2일
-     finalized: 2026-04-06
-     요약 필요: 2026-04-07
+  📋 circle complete
+     Date range: 3 days
+     Total sessions: 12
+     Changed dates: 2
+     Finalized: 2026-04-06
+     Needs summary: 2026-04-07
 ```
 
 ---
 
 ## Features
 
+### Default Command: Full Pipeline
+
+**v0.7.0** — Running `sincenety` with no arguments executes the entire pipeline automatically: **air → circle → out**. This is the recommended way to use sincenety — one command does everything.
+
+If D1 or email is not configured, it shows help + setup instructions instead.
+
 ### 3-Phase Pipeline: air → circle → out
 
-**v0.5.0** structures the CLI into a clear pipeline:
+The pipeline can also be run in individual phases:
 
-1. **`sincenety air`** (환기) — Collect and store work records by date
+1. **`sincenety air`** — Collect and store work records by date
    - Date-based grouping (midnight boundary, startedAt-based)
    - Automatic backfill: checkpoint-based, collects empty dates too
    - Change detection: data hash skips unchanged dates
    - Empty day records (no sessions = still recorded)
    - `--json` outputs per-date JSON
 
-2. **`sincenety circle`** (순환 정화) — LLM-powered summaries
+2. **`sincenety circle`** — LLM-powered summaries
    - Internally runs `air` first
    - `--json`: outputs session data for AI summary (SKILL.md integration)
    - `--save`: saves stdin JSON to `daily_reports`
    - `--type daily|weekly|monthly`
    - Auto-finalization: midnight finalizes previous day, Monday finalizes previous week, 1st finalizes previous month
    - Change detection: data hash comparison saves tokens
-   - Vacation days get a [휴가] label automatically
+   - Vacation days get a [vacation] label automatically
 
 3. **`sincenety out`** — Smart email delivery
    - `out`: daily always, +weekly on Friday, +monthly on month-end
@@ -54,17 +66,19 @@ $ sincenety circle
    - `outd` / `outw` / `outm`: force daily / weekly / monthly
    - `--preview`, `--render-only`, `--history`
 
-### CLI Commands (9)
+### CLI Commands
 
 | Command | Description |
 |---------|-------------|
+| `sincenety` | **Full pipeline** — air → circle → out in one command |
 | `sincenety air` | Collect — date-grouped auto-backfill gathering |
 | `sincenety circle` | Summarize — LLM summary (--json/--save/--type) |
 | `sincenety out` | Smart dispatch (weekday + unsent catchup) |
-| `sincenety outd` / `outw` / `outm` | Force daily / weekly / monthly send |
+| `sincenety outd` | Force send daily report |
+| `sincenety outw` | Force send weekly report |
+| `sincenety outm` | Force send monthly report |
 | `sincenety sync` | D1 central cloud sync |
 | `sincenety config` | Settings (--setup, --vacation, --d1-*) |
-| `sincenety schedule` | Auto-schedule (launchd/cron) |
 
 ### Retroactive Work Gathering
 
@@ -90,19 +104,19 @@ Unified AI provider system with configurable routing:
 
 | Environment | AI Provider | Control |
 |-------------|------------|---------|
-| **CLI** (cron, terminal) | Workers AI (always) | D1 토큰만 있으면 자동 |
-| **Claude Code** (`/sincenety`) | User's choice | `ai_provider` 설정 |
+| **CLI** (cron, terminal) | Workers AI (always) | Automatic with D1 token |
+| **Claude Code** (`/sincenety`) | User's choice | `ai_provider` config |
 
 ```bash
-# AI provider 설정 (Claude Code 환경에서의 동작 제어)
-sincenety config --ai-provider cloudflare   # Workers AI 사용
-sincenety config --ai-provider anthropic    # Claude API 사용
-sincenety config --ai-provider claude-code  # Claude Code 직접 요약
-sincenety config --ai-provider auto         # 자동 감지 (기본값)
+# AI provider configuration (controls behavior in Claude Code)
+sincenety config --ai-provider cloudflare   # Use Workers AI
+sincenety config --ai-provider anthropic    # Use Claude API
+sincenety config --ai-provider claude-code  # Claude Code direct summary
+sincenety config --ai-provider auto         # Auto-detect (default)
 
-# 현재 설정 확인
+# Check current settings
 sincenety config
-# → AI 요약: ai_provider = auto (auto → cloudflare)
+# → AI summary: ai_provider = auto (auto → cloudflare)
 ```
 
 - **Cloudflare Workers AI (Qwen3-30B)** for Korean text summarization
@@ -143,7 +157,7 @@ All commands (`air`, `circle`, `out`, `sync`, etc.) will refuse to run until bot
 - **CLI manual registration** — `config --vacation 2026-04-10 2026-04-11`
 - **Vacation keywords** (Korean + English): 휴가/vacation/연차/PTO/병가/sick/반차/half-day
 - **Vacation types**: vacation / sick / holiday / half / other
-- **Report integration** — vacation days get a [휴가] label in `circle`; `out` skips vacation days automatically
+- **Report integration** — vacation days get a [vacation] label in `circle`; `out` skips vacation days automatically
 
 ### Config Setup Wizard
 
@@ -162,9 +176,14 @@ Zero-config email delivery inside Claude Code via `gmail_create_draft` MCP tool.
 
 Run `sincenety config` with no arguments to see a formatted settings status table. Supports vacation registration, email provider selection (Gmail/Resend/custom SMTP), and more.
 
-### Auto-Scheduling
+### Scope Selection (Global / Project)
 
-Automatically gather at 6 PM (default). Uses launchd on macOS, crontab on Linux.
+Choose whether to track **all projects** on this machine or a **specific project only**:
+
+- **Global mode** — collects all Claude Code sessions across all projects
+- **Project mode** — filters to sessions from a single project path
+
+Scope is set during initial setup (`npm install -g`) or on first `npx sincenety` run. Stored at `~/.sincenety/scope.json`.
 
 ### Cloud Sync (Cloudflare D1)
 
@@ -177,24 +196,24 @@ Multi-machine data aggregation via Cloudflare D1:
 - **Machine ID**: hardware-based auto-detection (see below), `config --machine-name` override for custom identification
 - **Zero new dependencies**: uses native `fetch` for D1 REST API — no extra packages added
 
-### Cloudflare API Token 발급
+### Cloudflare API Token Setup
 
-1. **토큰 생성 페이지 접속**: [https://dash.cloudflare.com/profile/api-tokens](https://dash.cloudflare.com/profile/api-tokens)
-2. **"Create Token"** → **"Custom token"** (맨 아래 "Get started") 선택
-3. **권한 설정**:
+1. Go to [dash.cloudflare.com/profile/api-tokens](https://dash.cloudflare.com/profile/api-tokens)
+2. **"Create Token"** → **"Custom token"** (click "Get started" at the bottom)
+3. **Set permissions**:
 
-| Permission | Access | 용도 |
-|-----------|--------|------|
-| Account / **D1** | **Edit** | DB 생성 + 읽기/쓰기 |
-| Account / **Workers AI** | **Read** | AI 요약 모델 호출 (Qwen3-30B) |
-| Account / **Account Settings** | **Read** | 계정 자동 탐지 (`--d1-token` 설정 시) |
+| Permission | Access | Purpose |
+|-----------|--------|---------|
+| Account / **D1** | **Edit** | DB creation + read/write |
+| Account / **Workers AI** | **Read** | AI summary model (Qwen3-30B) |
+| Account / **Account Settings** | **Read** | Account auto-detection on `--d1-token` setup |
 
-> **3개 모두 필수입니다.** Account Settings Read가 없으면 `--d1-token`으로 자동 설정 시 계정을 찾을 수 없습니다.
+> **All 3 are required.** Without Account Settings Read, `--d1-token` setup cannot find your account.
 
-4. **Account Resources** → Include → 본인 계정 선택
-5. **"Create Token"** → 토큰 복사 (한 번만 표시됨!)
+4. **Account Resources** → Include → select your account
+5. **"Create Token"** → copy the token (shown only once!)
 
-> 이 토큰 하나로 D1 (중앙 DB) + Workers AI (요약 엔진) + sync (동기화) 전부 동작합니다.
+> This single token powers D1 (central DB) + Workers AI (summary engine) + sync.
 
 ### Token-Only D1 Setup
 
@@ -230,70 +249,109 @@ All data is AES-256-GCM encrypted at `~/.sincenety/sincenety.db`. Machine-bound 
 
 ---
 
-## Installation
+## Installation & Setup
+
+There are two ways to run sincenety: **npx** (no install) or **global install**.
+
+### Option A: npx (recommended for first-time / one-shot use)
+
+> **All three flags are required on first run.** Without them, sincenety will show setup instructions and exit.
+
+**Prerequisites — get your tokens first:**
+
+1. **Cloudflare D1 API Token** — [dash.cloudflare.com/profile/api-tokens](https://dash.cloudflare.com/profile/api-tokens)
+   - Create a Custom token with these permissions:
+
+   | Permission | Access | Purpose |
+   |-----------|--------|---------|
+   | Account / **D1** | **Edit** | DB creation + read/write |
+   | Account / **Workers AI** | **Read** | AI summarization (Qwen3-30B) |
+   | Account / **Account Settings** | **Read** | Account auto-detection |
+
+2. **Resend API Key** — [resend.com/api-keys](https://resend.com/api-keys)
+   - Free tier: 100 emails/day (more than enough for daily reports)
+
+**Run:**
 
 ```bash
-# Run directly via npx
-npx sincenety@latest
+npx sincenety --token <D1_TOKEN> --key <RESEND_KEY> --email you@example.com
+```
 
-# Or install globally
-npm install -g sincenety
+This single command will:
+- Save D1 token → auto-detect Cloudflare account → create DB → setup schema
+- Save Resend API key + recipient email
+- Run the full pipeline: **air → circle → out**
 
-# Or build from source
+**Subsequent runs** — config persists in `~/.sincenety/`, so you only need:
+
+```bash
+npx sincenety
+```
+
+### Option B: Global install (recommended for daily use)
+
+```bash
+npm install -g sincenety@latest
+```
+
+The installer runs an interactive setup wizard:
+
+```
+  ┌──────────────────────────────────────────────┐
+  │  sincenety — Initial Setup                   │
+  └──────────────────────────────────────────────┘
+
+  ── Step 1/3: Scope ─────────────────────────────
+    1) Global   — track all Claude Code projects on this machine
+    2) Project  — track only a specific project
+
+  ── Step 2/3: D1 Cloud Sync ─────────────────────
+    Guided Cloudflare API token creation with required permissions:
+      Account | Workers AI       | Read
+      Account | D1               | Edit
+      Account | Account Settings | Read
+
+  ── Step 3/3: Email Delivery ────────────────────
+    1) Gmail SMTP  (app password required)
+    2) Resend API  (resend.com API key)
+    3) Custom SMTP
+```
+
+After setup, just run:
+
+```bash
+sincenety
+```
+
+> **Note**: The setup wizard only runs on first install. Subsequent updates preserve your configuration. In non-TTY environments (CI/Docker), the wizard is skipped — configure manually with `sincenety config --setup`.
+
+### Build from source
+
+```bash
 git clone https://github.com/pathcosmos/sincenety.git
 cd sincenety
 npm install && npm run build
 npm link
 ```
 
-## Quick Start — Required Setup
-
-> **Both steps are mandatory.** All commands except `config` will refuse to run until setup is complete.
-
-### Step 1: Cloudflare API Token
-
-Create a token at [dash.cloudflare.com/profile/api-tokens](https://dash.cloudflare.com/profile/api-tokens) with these permissions:
-
-| Permission | Access | Purpose |
-|-----------|--------|---------|
-| Account / **D1** | **Edit** | DB creation + read/write |
-| Account / **Workers AI** | **Read** | AI summarization (Qwen3-30B) |
-| Account / **Account Settings** | **Read** | Account auto-detection |
-
-```bash
-sincenety config --d1-token <YOUR_API_TOKEN>
-# ✅ Account auto-detected
-# ✅ D1 database auto-created
-# ✅ Workers AI enabled
-# ✅ Schema setup complete
-```
-
-### Step 2: Email (Gmail SMTP)
-
-1. Generate an app password at [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords)
-2. Run the setup wizard:
-
-```bash
-sincenety config --setup
-# Select "1) Gmail SMTP"
-# Enter your Gmail address and app password
-# ✅ Connection test runs automatically
-```
-
-Or set manually:
-```bash
-sincenety config --email you@gmail.com --smtp-user you@gmail.com --smtp-pass
-```
-
-### Verify
+### Verify setup
 
 ```bash
 sincenety config
 # Shows all settings with ✅/❌ status
-# AI 요약: ai_provider = auto (auto → cloudflare)
+# AI summary: ai_provider = auto (auto → cloudflare)
 ```
 
 ## Usage
+
+### Default — Full Pipeline
+
+```bash
+# Run the entire pipeline: air → circle → out
+sincenety
+
+# If D1 or email is not configured, shows help + setup instructions
+```
 
 ### air — Collect Work Records
 
@@ -342,10 +400,10 @@ sincenety config --smtp-pass       # Prompted securely
 sincenety config --provider resend
 sincenety config --resend-key rk_...
 
-# AI provider (Claude Code 환경 제어)
+# AI provider (controls Claude Code behavior)
 sincenety config --ai-provider cloudflare   # Workers AI
 sincenety config --ai-provider anthropic    # Claude API
-sincenety config --ai-provider claude-code  # Claude Code 직접 요약
+sincenety config --ai-provider claude-code  # Claude Code direct summary
 sincenety config --ai-provider auto         # Auto-detect (default)
 
 # Vacation management
@@ -355,15 +413,6 @@ sincenety config --vacation-clear 2026-04-10
 ```
 
 > Generate Gmail app password: https://myaccount.google.com/apppasswords
-
-### schedule — Auto-Scheduling
-
-```bash
-sincenety schedule --install           # Install 6 PM daily
-sincenety schedule --install --time 19:00  # Custom time
-sincenety schedule --status            # Check status
-sincenety schedule --uninstall         # Remove
-```
 
 ### out — Smart Email Delivery
 
@@ -462,7 +511,8 @@ sincenety config --smtp-pass    # Prompts for Gmail app password
 ```
 sincenety/
 ├── src/
-│   ├── cli.ts                  # CLI entry (commander: air, circle, out, sync, config, schedule — 9 commands)
+│   ├── cli.ts                  # CLI entry (default + air/circle/out/outd/outw/outm/sync/config)
+│   ├── postinstall.ts          # postinstall setup wizard (scope → D1 → email)
 │   ├── core/
 │   │   ├── air.ts              # Phase 1: date-based gathering (backfill + hash)
 │   │   ├── circle.ts           # Phase 2: LLM summary pipeline (finalization + save)
@@ -493,7 +543,8 @@ sincenety/
 │   │   ├── manager.ts          # Vacation CRUD (register/list/clear/check)
 │   │   └── detector.ts         # Vacation keyword detection (KO+EN)
 │   ├── config/
-│   │   └── setup-wizard.ts     # Interactive 3-choice setup wizard
+│   │   ├── setup-wizard.ts     # Interactive 3-choice setup wizard
+│   │   └── scope.ts            # Scope config (global/project) read/write/prompt
 │   ├── cloud/
 │   │   ├── d1-client.ts        # Cloudflare D1 REST API client
 │   │   ├── d1-schema.ts        # D1 schema definition & migration
@@ -502,7 +553,7 @@ sincenety/
 │   │   └── sync.ts             # Sync logic (push/pull/status/init)
 │   ├── util/
 │   │   └── machine-id.ts       # Cross-platform hardware ID detection
-│   ├── scheduler/install.ts    # launchd/cron auto-installer
+│   ├── scheduler/install.ts    # launchd/cron auto-installer (disabled)
 │   └── skill/SKILL.md          # Claude Code skill definition
 ├── tests/
 │   ├── encryption.test.ts      # Encryption tests (26 cases)
@@ -637,11 +688,16 @@ node dist/cli.js     # Direct execution
 - [x] Unified AI provider routing (cloudflare/anthropic/claude-code/heuristic)
 - [x] Mandatory setup guard (D1 + SMTP required before any command)
 - [x] Clean JSON output: `--render-only` stdout/stderr separation, single JSON output
+- [x] Default command: `sincenety` (no args) runs full pipeline (air → circle → out)
+- [x] English CLI: all user-facing messages converted to English
+- [x] AI provider setup required on first run in Claude Code
+- [x] Scope selection: global (all projects) or project (specific path) mode
+- [x] Postinstall setup wizard: `npm install -g` triggers interactive 3-step setup
 - [ ] Passphrase encryption option
 - [ ] Similar task matching (TF-IDF)
 - [ ] External DB connectors (MariaDB/PostgreSQL)
 - [ ] ccusage integration (automatic cost calculation)
-- [ ] Multi-language report output (EN/KO toggle)
+- [ ] Multi-language report output (KO toggle option)
 - [ ] Report export (PDF/HTML standalone)
 
 ---

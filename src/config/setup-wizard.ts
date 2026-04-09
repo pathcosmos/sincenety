@@ -117,17 +117,17 @@ export async function runSetupWizard(storage: StorageAdapter): Promise<WizardRes
   try {
     console.log("");
     console.log("  ┌──────────────────────────────────────────────┐");
-    console.log("  │  sincenety 이메일 설정 위저드                │");
+    console.log("  │  sincenety Email Setup Wizard                │");
     console.log("  └──────────────────────────────────────────────┘");
     console.log("");
-    console.log("  이메일 provider를 선택하세요:");
+    console.log("  Select an email provider:");
     console.log("");
-    console.log("    1) Gmail SMTP  (앱 비밀번호 필요)");
-    console.log("    2) Resend API  (resend.com API 키)");
-    console.log("    3) Custom SMTP (직접 설정)");
+    console.log("    1) Gmail SMTP  (app password required)");
+    console.log("    2) Resend API  (resend.com API key)");
+    console.log("    3) Custom SMTP (manual setup)");
     console.log("");
 
-    const choice = await prompt(rl, "  선택 (1/2/3): ");
+    const choice = await prompt(rl, "  Choice (1/2/3): ");
 
     if (choice === "1") {
       return await setupGmail(rl, storage);
@@ -136,8 +136,8 @@ export async function runSetupWizard(storage: StorageAdapter): Promise<WizardRes
     } else if (choice === "3") {
       return await setupCustomSMTP(rl, storage);
     } else {
-      console.log("  잘못된 선택입니다. 1, 2, 3 중에서 선택해 주세요.");
-      return { provider: "none", success: false, message: "잘못된 선택" };
+      console.log("  Invalid choice. Please select 1, 2, or 3.");
+      return { provider: "none", success: false, message: "Invalid choice" };
     }
   } finally {
     rl.close();
@@ -151,35 +151,35 @@ async function setupGmail(
 ): Promise<WizardResult> {
   let rl = _rl;
   console.log("");
-  console.log("  ── Gmail SMTP 설정 ──");
+  console.log("  ── Gmail SMTP Setup ──");
   console.log("");
 
-  const email = await prompt(rl, "  Gmail 주소 (발신+수신): ");
+  const email = await prompt(rl, "  Gmail address (send+receive): ");
   if (!email) {
-    return { provider: "gmail", success: false, message: "이메일이 입력되지 않았습니다." };
+    return { provider: "gmail", success: false, message: "No email provided." };
   }
 
   console.log("");
-  console.log("  앱 비밀번호가 필요합니다.");
-  console.log("  생성: https://myaccount.google.com/apppasswords");
+  console.log("  An app password is required.");
+  console.log("  Create one: https://myaccount.google.com/apppasswords");
   console.log("");
 
-  // readline을 close → raw stdin → readline 재생성
-  const secretResult = await promptSecret("  앱 비밀번호: ", rl);
+  // readline close → raw stdin → readline recreate
+  const secretResult = await promptSecret("  App password: ", rl);
   const password = secretResult.password;
   rl = secretResult.rl;
 
   if (!password) {
-    return { provider: "gmail", success: false, message: "비밀번호가 입력되지 않았습니다." };
+    return { provider: "gmail", success: false, message: "No password provided." };
   }
 
   console.log("");
-  console.log("  연결 테스트 중...");
+  console.log("  Testing connection...");
 
   const result = await verifySMTP("smtp.gmail.com", 587, email, password);
   if (!result.ok) {
-    console.log(`  ❌ 연결 실패: ${result.error}`);
-    return { provider: "gmail", success: false, message: `연결 실패: ${result.error}` };
+    console.log(`  ❌ Connection failed: ${result.error}`);
+    return { provider: "gmail", success: false, message: `Connection failed: ${result.error}` };
   }
 
   await saveConfigs(storage, {
@@ -191,9 +191,9 @@ async function setupGmail(
     smtp_port: "587",
   });
 
-  console.log("  ✅ Gmail SMTP 설정 완료!");
+  console.log("  ✅ Gmail SMTP setup complete!");
   console.log("");
-  return { provider: "gmail", success: true, message: "Gmail SMTP 설정 완료" };
+  return { provider: "gmail", success: true, message: "Gmail SMTP setup complete" };
 }
 
 /** Resend API 설정 */
@@ -203,31 +203,31 @@ async function setupResend(
 ): Promise<WizardResult> {
   let rl = _rl;
   console.log("");
-  console.log("  ── Resend API 설정 ──");
+  console.log("  ── Resend API Setup ──");
   console.log("");
-  console.log("  API 키 생성: https://resend.com/api-keys");
+  console.log("  Create API key: https://resend.com/api-keys");
   console.log("");
 
-  const secretResult = await promptSecret("  Resend API 키: ", rl);
+  const secretResult = await promptSecret("  Resend API key: ", rl);
   const apiKey = secretResult.password;
   rl = secretResult.rl;
 
   if (!apiKey) {
-    return { provider: "resend", success: false, message: "API 키가 입력되지 않았습니다." };
+    return { provider: "resend", success: false, message: "No API key provided." };
   }
 
-  const recipientEmail = await prompt(rl, "  수신 이메일 주소: ");
+  const recipientEmail = await prompt(rl, "  Recipient email: ");
   if (!recipientEmail) {
-    return { provider: "resend", success: false, message: "수신 이메일이 입력되지 않았습니다." };
+    return { provider: "resend", success: false, message: "No recipient email provided." };
   }
 
   console.log("");
-  console.log("  API 키 검증 중...");
+  console.log("  Verifying API key...");
 
   const result = await verifyResend(apiKey);
   if (!result.ok) {
-    console.log(`  ❌ 검증 실패: ${result.error}`);
-    return { provider: "resend", success: false, message: `검증 실패: ${result.error}` };
+    console.log(`  ❌ Verification failed: ${result.error}`);
+    return { provider: "resend", success: false, message: `Verification failed: ${result.error}` };
   }
 
   await saveConfigs(storage, {
@@ -236,9 +236,9 @@ async function setupResend(
     email: recipientEmail,
   });
 
-  console.log("  ✅ Resend API 설정 완료!");
+  console.log("  ✅ Resend API setup complete!");
   console.log("");
-  return { provider: "resend", success: true, message: "Resend API 설정 완료" };
+  return { provider: "resend", success: true, message: "Resend API setup complete" };
 }
 
 /** Custom SMTP 설정 */
@@ -248,42 +248,42 @@ async function setupCustomSMTP(
 ): Promise<WizardResult> {
   let rl = _rl;
   console.log("");
-  console.log("  ── Custom SMTP 설정 ──");
+  console.log("  ── Custom SMTP Setup ──");
   console.log("");
 
-  const host = await prompt(rl, "  SMTP 호스트: ");
+  const host = await prompt(rl, "  SMTP host: ");
   if (!host) {
-    return { provider: "custom_smtp", success: false, message: "호스트가 입력되지 않았습니다." };
+    return { provider: "custom_smtp", success: false, message: "No host provided." };
   }
 
-  const portStr = await prompt(rl, "  SMTP 포트 (587): ");
+  const portStr = await prompt(rl, "  SMTP port (587): ");
   const port = parseInt(portStr || "587", 10);
 
-  const user = await prompt(rl, "  SMTP 사용자 (발신 이메일): ");
+  const user = await prompt(rl, "  SMTP user (sender email): ");
   if (!user) {
-    return { provider: "custom_smtp", success: false, message: "사용자가 입력되지 않았습니다." };
+    return { provider: "custom_smtp", success: false, message: "No user provided." };
   }
 
-  const secretResult = await promptSecret("  SMTP 비밀번호: ", rl);
+  const secretResult = await promptSecret("  SMTP password: ", rl);
   const pass = secretResult.password;
   rl = secretResult.rl;
 
   if (!pass) {
-    return { provider: "custom_smtp", success: false, message: "비밀번호가 입력되지 않았습니다." };
+    return { provider: "custom_smtp", success: false, message: "No password provided." };
   }
 
-  const recipient = await prompt(rl, "  수신 이메일 주소: ");
+  const recipient = await prompt(rl, "  Recipient email: ");
   if (!recipient) {
-    return { provider: "custom_smtp", success: false, message: "수신 이메일이 입력되지 않았습니다." };
+    return { provider: "custom_smtp", success: false, message: "No recipient email provided." };
   }
 
   console.log("");
-  console.log("  연결 테스트 중...");
+  console.log("  Testing connection...");
 
   const result = await verifySMTP(host, port, user, pass);
   if (!result.ok) {
-    console.log(`  ❌ 연결 실패: ${result.error}`);
-    return { provider: "custom_smtp", success: false, message: `연결 실패: ${result.error}` };
+    console.log(`  ❌ Connection failed: ${result.error}`);
+    return { provider: "custom_smtp", success: false, message: `Connection failed: ${result.error}` };
   }
 
   await saveConfigs(storage, {
@@ -295,7 +295,7 @@ async function setupCustomSMTP(
     smtp_pass: pass,
   });
 
-  console.log("  ✅ Custom SMTP 설정 완료!");
+  console.log("  ✅ Custom SMTP setup complete!");
   console.log("");
-  return { provider: "custom_smtp", success: true, message: "Custom SMTP 설정 완료" };
+  return { provider: "custom_smtp", success: true, message: "Custom SMTP setup complete" };
 }

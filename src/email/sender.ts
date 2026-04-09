@@ -39,13 +39,13 @@ export async function sendGatherEmail(
 
   if (!config.email || !config.smtpUser || !config.smtpPass) {
     console.log(
-      "  이메일이 설정되지 않았습니다. 아래 명령으로 설정해 주세요:\n" +
+      "  Email not configured. Set up with the following commands:\n" +
         "\n" +
-        "    sincenety config --email 수신자@gmail.com\n" +
-        "    sincenety config --smtp-user 발신자@gmail.com\n" +
-        "    sincenety config --smtp-pass   (프롬프트에서 앱 비밀번호 입력)\n" +
+        "    sincenety config --email recipient@gmail.com\n" +
+        "    sincenety config --smtp-user sender@gmail.com\n" +
+        "    sincenety config --smtp-pass   (enter app password at prompt)\n" +
         "\n" +
-        "  Gmail 앱 비밀번호 생성: https://myaccount.google.com/apppasswords",
+        "  Generate Gmail app password: https://myaccount.google.com/apppasswords",
     );
     return;
   }
@@ -57,21 +57,21 @@ export async function sendGatherEmail(
     if (latest && latest.id === reportId) {
       report = latest;
     } else {
-      throw new Error(`리포트 ID ${reportId}를 찾을 수 없습니다.`);
+      throw new Error(`Report ID ${reportId} not found.`);
     }
   } else {
     report = await storage.getLatestGatherReport();
   }
 
   if (!report) {
-    console.log("  발송할 갈무리 리포트가 없습니다. 먼저 갈무리를 실행해 주세요.");
+    console.log("  No report to send. Run gather first.");
     return;
   }
 
   // 이미 발송된 리포트인지 확인
   if (report.emailedAt) {
-    const sentDate = new Date(report.emailedAt).toLocaleString("ko-KR");
-    console.log(`  이 리포트는 이미 ${sentDate}에 ${report.emailTo}로 발송되었습니다.`);
+    const sentDate = new Date(report.emailedAt).toLocaleString("en-US");
+    console.log(`  This report was already sent to ${report.emailTo} on ${sentDate}.`);
     return;
   }
 
@@ -106,7 +106,7 @@ export async function sendGatherEmail(
   const totalTokensK = Math.round(
     (report.totalInputTokens + report.totalOutputTokens) / 1000,
   );
-  const subject = `[sincenety] ${dateStr} 일일보고 — ${report.sessionCount}세션, ${report.totalMessages}msg, ${totalTokensK}Ktok`;
+  const subject = `[sincenety] ${dateStr} Daily Report — ${report.sessionCount} sessions, ${report.totalMessages}msg, ${totalTokensK}Ktok`;
 
   // HTML 생성 — AI 요약이 있으면 wrapUp에 매핑
   let html: string;
@@ -161,7 +161,7 @@ export async function sendGatherEmail(
   // plain text 본문도 AI 요약 기반으로 구성
   let plainText = report.reportMarkdown;
   if (dailyOverview) {
-    plainText = `[일일보고] ${dateStr}\n\n${dailyOverview}\n\n${plainText}`;
+    plainText = `[Daily Report] ${dateStr}\n\n${dailyOverview}\n\n${plainText}`;
   }
 
   // 전송
@@ -189,8 +189,8 @@ export async function sendGatherEmail(
     await storage.updateDailyReportEmail(dailyReport.id, Date.now(), config.email);
   }
 
-  console.log(`  이메일 발송 완료: ${config.email}`);
-  console.log(`  제목: ${subject}`);
+  console.log(`  Email sent: ${config.email}`);
+  console.log(`  Subject: ${subject}`);
 }
 
 /**
@@ -202,7 +202,7 @@ export async function sendEmailViaSMTP(
 ): Promise<void> {
   const config = await getEmailConfig(storage);
   if (!config.smtpUser || !config.smtpPass) {
-    throw new Error("SMTP 설정이 필요합니다. sincenety config --setup");
+    throw new Error("SMTP setup required. Run: sincenety config --setup");
   }
   const transporter = createTransport({
     host: config.smtpHost,

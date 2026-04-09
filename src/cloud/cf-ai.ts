@@ -75,7 +75,7 @@ ${turnTexts}
 
     if (!res.ok) {
       const text = await res.text();
-      console.warn(`  ⚠️ Workers AI 응답 오류 (${res.status}): ${text.slice(0, 100)}`);
+      console.warn(`  ⚠️ Workers AI response error (${res.status}): ${text.slice(0, 100)}`);
       return null;
     }
 
@@ -95,7 +95,7 @@ ${turnTexts}
       nextSteps: parsed.nextSteps || undefined,
     };
   } catch (err) {
-    console.warn(`  ⚠️ Workers AI 요약 실패: ${err instanceof Error ? err.message : String(err)}`);
+    console.warn(`  ⚠️ Workers AI summary failed: ${err instanceof Error ? err.message : String(err)}`);
     return null;
   }
 }

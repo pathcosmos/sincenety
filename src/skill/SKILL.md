@@ -23,6 +23,12 @@ Google Calendar MCP가 사용 가능하면 (`gcal_list_events` 호출 성공):
 
 먼저 `sincenety config` 출력에서 `ai_provider` 값을 확인합니다.
 
+**첫 실행 시 (ai_provider 미설정)**: Claude Code 안에서 실행 중이라면 반드시 ai_provider를 설정합니다:
+```bash
+sincenety config --ai-provider claude-code
+```
+이렇게 하면 Claude Code가 직접 요약을 생성합니다. Cloudflare Workers AI를 사용하려면 `cloudflare`로 설정합니다.
+
 **cloudflare인 경우** (Workers AI가 요약 생성):
 ```bash
 sincenety circle --json --summarize

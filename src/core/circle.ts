@@ -87,7 +87,7 @@ export function getProgressLabel(
   completed: number,
   total: number,
 ): string {
-  return `진행중 — ${completed}/${total}일`;
+  return `in progress — ${completed}/${total} days`;
 }
 
 /**
@@ -191,7 +191,7 @@ export async function circleJson(
           // overview를 최상위에 첨부
           (sessions as any)[`${dateStr}_overview`] = overview;
         }
-        console.log(`  🤖 ${dateStr} AI 요약 완료 (${summaries.length}세션, Workers AI)`);
+        console.log(`  🤖 ${dateStr} AI summary done (${summaries.length} sessions, Workers AI)`);
       }
     }
   }
@@ -250,7 +250,7 @@ export async function circleSave(
   const { isVacationDay } = await import("../vacation/manager.js");
   const isVacation = await isVacationDay(storage, date);
   if (isVacation && mergedSessions.length === 0) {
-    overview = overview ?? "[휴가]";
+    overview = overview ?? "[vacation]";
   }
 
   // 오늘이면 in_progress, 아니면 finalized
@@ -341,10 +341,10 @@ export async function autoSummarize(
           sessions: summaries,
         });
         summarized++;
-        console.log(`  🤖 ${date} AI 요약 완료 (${summaries.length}세션, Cloudflare AI)`);
+        console.log(`  🤖 ${date} AI summary done (${summaries.length} sessions, Cloudflare AI)`);
       }
     } catch (err) {
-      console.warn(`  ⚠️ ${date} AI 요약 실패: ${err instanceof Error ? err.message : String(err)}`);
+      console.warn(`  ⚠️ ${date} AI summary failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -366,7 +366,7 @@ export async function runCircle(
   if (!options?.json && !options?.save && !options?.skipAutoSummarize) {
     const summarized = await autoSummarize(storage, airResult.changedDates);
     if (summarized > 0) {
-      console.log(`  🤖 Cloudflare AI: ${summarized}일 요약 완료`);
+      console.log(`  🤖 Cloudflare AI: ${summarized} day(s) summarized`);
     }
   }
 

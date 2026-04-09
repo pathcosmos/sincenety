@@ -77,8 +77,8 @@ export async function sendEmail(
 
   if (provider === "none") {
     throw new Error(
-      "이메일 provider가 설정되지 않았습니다. " +
-        "sincenety config --resend-key 또는 --smtp-pass 로 설정하세요.",
+      "Email provider not configured. " +
+        "Use sincenety config --resend-key or --smtp-pass to set up.",
     );
   }
 

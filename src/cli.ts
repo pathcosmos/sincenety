@@ -8,60 +8,61 @@ import { runAir } from "./core/air.js";
 import { runCircle, circleJson, circleSave } from "./core/circle.js";
 import { SqlJsAdapter } from "./storage/sqljs-adapter.js";
 import type { StorageAdapter } from "./storage/adapter.js";
-import {
-  installSchedule,
-  uninstallSchedule,
-  getScheduleStatus,
-} from "./scheduler/install.js";
+import { readScope, promptScope } from "./config/scope.js";
 
 const program = new Command();
 
 program
   .name("sincenety")
-  .description("Claude Code 작업 갈무리 도구")
+  .description("Claude Code work session tracker")
   .version("0.3.0");
 
 // ─── setup reminder ─────────────────────────────────────
 
 /**
- * 필수 설정 가드 — D1 토큰 + SMTP(또는 Resend) 미설정 시 실행 차단.
- * 모든 커맨드(config 제외) 실행 전에 호출.
+ * Setup guard — blocks execution when D1 token or SMTP/Resend is missing.
+ * Called before all commands except config.
  */
 async function requireSetup(storage: StorageAdapter): Promise<void> {
   const missing: string[] = [];
 
-  // 1. D1 토큰 체크
   const d1Token = await storage.getConfig("d1_api_token");
   if (!d1Token) {
     missing.push("D1");
   }
 
-  // 2. 이메일 발송 체크 (SMTP 또는 Resend)
   const [smtpPass, resendKey] = await Promise.all([
     storage.getConfig("smtp_pass"),
     storage.getConfig("resend_key"),
   ]);
   if (!smtpPass && !resendKey) {
-    missing.push("이메일");
+    missing.push("email");
   }
 
   if (missing.length === 0) return;
 
   console.log("");
-  console.log("  ┌──────────────────────────────────────────────────────────┐");
-  console.log("  │ ❌ 필수 설정이 완료되지 않았습니다                      │");
-  console.log("  ├──────────────────────────────────────────────────────────┤");
+  console.log("  ❌ Required setup incomplete");
+  console.log("  ────────────────────────────");
+  console.log("");
+  console.log("  Quick start (npx one-liner, all 3 flags required):");
+  console.log("");
+  console.log("    npx sincenety --token <D1_TOKEN> --key <RESEND_KEY> --email <ADDRESS>");
+  console.log("");
+  console.log("  Missing:");
   if (missing.includes("D1")) {
-    console.log("  │ 1. D1 클라우드 동기화 (필수)                            │");
-    console.log("  │    sincenety config --d1-token <API_TOKEN>              │");
-    console.log("  │    토큰 생성: https://dash.cloudflare.com/profile/api-tokens │");
+    console.log("    ❌ D1 cloud sync");
+    console.log("       Token: https://dash.cloudflare.com/profile/api-tokens");
   }
-  if (missing.includes("이메일")) {
-    console.log("  │ 2. 이메일 발송 (필수)                                   │");
-    console.log("  │    sincenety config --setup                             │");
-    console.log("  │    Gmail 앱 비밀번호: https://myaccount.google.com/apppasswords │");
+  if (missing.includes("email")) {
+    console.log("    ❌ Email delivery");
+    console.log("       Resend key: https://resend.com/api-keys");
   }
-  console.log("  └──────────────────────────────────────────────────────────┘");
+  console.log("");
+  console.log("  Or configure individually:");
+  console.log("    sincenety config --d1-token <TOKEN>");
+  console.log("    sincenety config --resend-key <KEY> --email <ADDRESS>");
+  console.log("    sincenety config --setup    (interactive wizard)");
   console.log("");
   process.exit(1);
 }
@@ -92,13 +93,13 @@ async function showConfigStatus(storage: StorageAdapter): Promise<void> {
       } else {
         displayVal = val;
       }
-      status = "✅ 설정됨";
+      status = "✅ set";
     } else if (k.defaultVal) {
       displayVal = k.defaultVal;
-      status = "✅ 기본값";
+      status = "✅ default";
     } else {
-      displayVal = "(미설정)";
-      status = "❌ 필요";
+      displayVal = "(not set)";
+      status = "❌ required";
     }
 
     rows.push({ label: k.label, value: displayVal, status });
@@ -119,13 +120,13 @@ async function showConfigStatus(storage: StorageAdapter): Promise<void> {
     r;
 
   console.log("");
-  console.log("  sincenety 설정 상태");
+  console.log("  sincenety configuration");
   console.log("  " + hLine("┌", "┬", "┐"));
   console.log(
     "  │" +
-      ` ${padEndW("항목", labelW)} │` +
-      ` ${padEndW("값", valueW)} │` +
-      ` ${padEndW("상태", statusW)} │`,
+      ` ${padEndW("Key", labelW)} │` +
+      ` ${padEndW("Value", valueW)} │` +
+      ` ${padEndW("Status", statusW)} │`,
   );
   console.log("  " + hLine("├", "┼", "┤"));
 
@@ -163,12 +164,12 @@ async function showConfigStatus(storage: StorageAdapter): Promise<void> {
       } else {
         displayVal = val;
       }
-      status = "✅ 설정됨";
+      status = "✅ set";
     } else if (k.key === "machine_id") {
       displayVal = getMachineId();
-      status = "✅ 자동감지";
+      status = "✅ auto";
     } else {
-      displayVal = "(미설정)";
+      displayVal = "(not set)";
       status = "─";
     }
 
@@ -189,13 +190,13 @@ async function showConfigStatus(storage: StorageAdapter): Promise<void> {
     r;
 
   console.log("");
-  console.log("  D1 클라우드 동기화");
+  console.log("  D1 cloud sync");
   console.log("  " + d1HLine("┌", "┬", "┐"));
   console.log(
     "  │" +
-      ` ${padEndW("항목", d1LabelW)} │` +
-      ` ${padEndW("값", d1ValueW)} │` +
-      ` ${padEndW("상태", d1StatusW)} │`,
+      ` ${padEndW("Key", d1LabelW)} │` +
+      ` ${padEndW("Value", d1ValueW)} │` +
+      ` ${padEndW("Status", d1StatusW)} │`,
   );
   console.log("  " + d1HLine("├", "┼", "┤"));
 
@@ -216,7 +217,7 @@ async function showConfigStatus(storage: StorageAdapter): Promise<void> {
   const resolved = await resolveAiProvider(storage);
   const aiVal = aiProviderExplicit ?? "auto";
   const aiResolved = aiProviderExplicit ? resolved : `auto → ${resolved}`;
-  console.log(`  AI 요약: ai_provider = ${aiVal} (${aiResolved})`);
+  console.log(`  AI summary: ai_provider = ${aiVal} (${aiResolved})`);
   console.log("");
 }
 
@@ -255,16 +256,16 @@ function padEndW(str: string, width: number): string {
 
 program
   .command("air")
-  .description("환기 — 날짜별 갈무리 (history.jsonl → DB)")
-  .option("--history <path>", "history.jsonl 경로")
-  .option("--json", "날짜별 JSON 출력")
+  .description("Collect sessions by date (history.jsonl → DB)")
+  .option("--history <path>", "Path to history.jsonl")
+  .option("--json", "Output JSON by date")
   .action(async (options) => {
     // --history 경로 검증
     let historyPath: string | undefined;
     if (options.history) {
       historyPath = resolve(options.history);
       if (!existsSync(historyPath)) {
-        console.error(`  ❌ history 파일을 찾을 수 없습니다: ${historyPath}`);
+        console.error(`  ❌ History file not found: ${historyPath}`);
         process.exit(1);
       }
     }
@@ -277,7 +278,6 @@ program
       const result = await runAir(storage, { historyPath });
 
       if (options.json) {
-        // 변경된 날짜의 gather_reports JSON 출력
         const output: Record<string, unknown> = {};
         for (const dateStr of result.changedDates) {
           const report = await storage.getGatherReportByDate(dateStr);
@@ -293,17 +293,16 @@ program
         }
         console.log(JSON.stringify(output));
       } else {
-        // 터미널 요약
         console.log("");
-        console.log(`  📋 air 갈무리 완료`);
-        console.log(`     날짜 범위: ${result.dates.length}일 (백필 ${result.backfillDays}일)`);
-        console.log(`     총 세션: ${result.totalSessions}개`);
-        console.log(`     변경 날짜: ${result.changedDates.length}일`);
+        console.log(`  📋 air complete`);
+        console.log(`     Date range: ${result.dates.length} days (backfill ${result.backfillDays} days)`);
+        console.log(`     Total sessions: ${result.totalSessions}`);
+        console.log(`     Changed dates: ${result.changedDates.length}`);
         if (result.changedDates.length > 0) {
-          console.log(`     변경: ${result.changedDates.join(", ")}`);
+          console.log(`     Changed: ${result.changedDates.join(", ")}`);
         }
         if (result.isFirstRun) {
-          console.log(`     [첫 실행 — 90일 백필]`);
+          console.log(`     [First run — 90-day backfill]`);
         }
         console.log("");
       }
@@ -321,12 +320,12 @@ program
 
 program
   .command("circle")
-  .description("마무리 — AI 요약 연동 (JSON 출력/저장)")
-  .option("--json", "요약 필요 세션 데이터 JSON 출력 (SKILL.md용)")
-  .option("--save", "stdin JSON → daily_reports 저장")
-  .option("--summarize", "Workers AI로 세션 요약 포함 (--json과 함께 사용)")
-  .option("--type <type>", "보고 유형: daily | weekly | monthly", "daily")
-  .option("--history <path>", "history.jsonl 경로")
+  .description("Finalize with AI summary (JSON output/save)")
+  .option("--json", "Output session data as JSON (for SKILL.md)")
+  .option("--save", "Save stdin JSON → daily_reports")
+  .option("--summarize", "Include Workers AI summaries (with --json)")
+  .option("--type <type>", "Report type: daily | weekly | monthly", "daily")
+  .option("--history <path>", "Path to history.jsonl")
   .action(async (options) => {
     if (options.save) {
       // stdin JSON 읽기
@@ -337,7 +336,7 @@ program
       const input = Buffer.concat(chunks).toString("utf-8").trim();
 
       if (!input) {
-        console.error("  ❌ 입력 데이터가 없습니다. stdin으로 JSON을 전달해 주세요.");
+        console.error("  ❌ No input data. Please pipe JSON via stdin.");
         process.exit(1);
       }
 
@@ -358,11 +357,11 @@ program
       try {
         data = JSON.parse(input);
         if (!data.date || !Array.isArray(data.sessions)) {
-          throw new Error("date와 sessions 필드가 필요합니다");
+          throw new Error("'date' and 'sessions' fields are required");
         }
       } catch (err) {
         console.error(
-          `  ❌ JSON 파싱 실패: ${err instanceof Error ? err.message : String(err)}`,
+          `  ❌ JSON parse error: ${err instanceof Error ? err.message : String(err)}`,
         );
         process.exit(1);
       }
@@ -374,14 +373,8 @@ program
           ...data,
           type: options.type as "daily" | "weekly" | "monthly",
         });
-        const typeLabel =
-          options.type === "daily"
-            ? "일일"
-            : options.type === "weekly"
-              ? "주간"
-              : "월간";
         console.log(
-          `  ✅ ${typeLabel}보고 저장 완료: ${data.date} (${data.sessions.length}세션)`,
+          `  ✅ ${options.type} report saved: ${data.date} (${data.sessions.length} sessions)`,
         );
       } catch (err) {
         console.error(
@@ -399,7 +392,7 @@ program
     if (options.history) {
       historyPath = resolve(options.history);
       if (!existsSync(historyPath)) {
-        console.error(`  ❌ history 파일을 찾을 수 없습니다: ${historyPath}`);
+        console.error(`  ❌ History file not found: ${historyPath}`);
         process.exit(1);
       }
     }
@@ -415,15 +408,15 @@ program
       } else {
         const result = await runCircle(storage, { historyPath });
         console.log("");
-        console.log(`  📋 circle 마무리 완료`);
-        console.log(`     날짜 범위: ${result.airResult.dates.length}일`);
-        console.log(`     총 세션: ${result.airResult.totalSessions}개`);
-        console.log(`     변경 날짜: ${result.airResult.changedDates.length}일`);
+        console.log(`  📋 circle complete`);
+        console.log(`     Date range: ${result.airResult.dates.length} days`);
+        console.log(`     Total sessions: ${result.airResult.totalSessions}`);
+        console.log(`     Changed dates: ${result.airResult.changedDates.length}`);
         if (result.finalized.length > 0) {
-          console.log(`     finalized: ${result.finalized.join(", ")}`);
+          console.log(`     Finalized: ${result.finalized.join(", ")}`);
         }
         if (result.needsSummary.length > 0) {
-          console.log(`     요약 필요: ${result.needsSummary.join(", ")}`);
+          console.log(`     Needs summary: ${result.needsSummary.join(", ")}`);
         }
         console.log("");
       }
@@ -441,10 +434,10 @@ program
 
 program
   .command("out")
-  .description("보고서 자동 발신 (요일/미발송 상태에 따라 유형 결정)")
-  .option("--preview", "발송 안 하고 미리보기만")
-  .option("--render-only", "HTML/제목/수신자 JSON 출력 (Gmail MCP용)")
-  .option("--history", "최근 발송 내역 조회")
+  .description("Smart report dispatch (auto-detect daily/weekly/monthly)")
+  .option("--preview", "Preview only, do not send")
+  .option("--render-only", "Output HTML/subject/recipient JSON (for Gmail MCP)")
+  .option("--history", "Show recent send history")
   .action(async (options) => {
     const storage = new SqlJsAdapter();
     try {
@@ -453,7 +446,7 @@ program
       if (options.history) {
         const logs = await storage.getEmailLogs(20);
         if (logs.length === 0) {
-          console.log("  발송 내역이 없습니다.");
+          console.log("  No send history found.");
           return;
         }
 
@@ -474,14 +467,14 @@ program
           r;
 
         console.log("");
-        console.log("  최근 발송 내역");
+        console.log("  Recent send history");
         console.log("  " + hLine("┌", "┬", "┐"));
         console.log(
           "  │" +
-            ` ${padEndW("날짜", dateW)} │` +
-            ` ${padEndW("유형", typeW)} │` +
-            ` ${padEndW("수신자", recipW)} │` +
-            ` ${padEndW("상태", statusW)} │`,
+            ` ${padEndW("Date", dateW)} │` +
+            ` ${padEndW("Type", typeW)} │` +
+            ` ${padEndW("Recipient", recipW)} │` +
+            ` ${padEndW("Status", statusW)} │`,
         );
         console.log("  " + hLine("├", "┼", "┤"));
 
@@ -513,9 +506,9 @@ program
         renderOnly: options.renderOnly,
       });
       if (!options.renderOnly) {
-        const parts = [`${result.sent}건 발송`, `${result.skipped}건 스킵`];
-        if (result.errors > 0) parts.push(`${result.errors}건 오류`);
-        console.log(`  ✅ out 완료 — ${parts.join(", ")}`);
+        const parts = [`${result.sent} sent`, `${result.skipped} skipped`];
+        if (result.errors > 0) parts.push(`${result.errors} errors`);
+        console.log(`  ✅ out complete — ${parts.join(", ")}`);
       }
       for (const e of result.entries) {
         if (e.status === "error" && e.error) {
@@ -535,14 +528,14 @@ program
 // ─── outd / outw / outm 명령 ──────────────────────────
 
 for (const [cmd, type, desc] of [
-  ["outd", "daily", "일일보고 강제 발신"],
-  ["outw", "weekly", "주간보고 강제 발신"],
-  ["outm", "monthly", "월간보고 강제 발신"],
+  ["outd", "daily", "Force send daily report"],
+  ["outw", "weekly", "Force send weekly report"],
+  ["outm", "monthly", "Force send monthly report"],
 ] as const) {
   program
     .command(cmd)
     .description(desc)
-    .option("--preview", "발송 안 하고 미리보기만")
+    .option("--preview", "Preview only, do not send")
     .action(async (options) => {
       const storage = new SqlJsAdapter();
       try {
@@ -553,9 +546,9 @@ for (const [cmd, type, desc] of [
           force: type,
           preview: options.preview,
         });
-        const parts = [`${result.sent}건 발송`, `${result.skipped}건 스킵`];
-        if (result.errors > 0) parts.push(`${result.errors}건 오류`);
-        console.log(`  ✅ ${cmd} 완료 — ${parts.join(", ")}`);
+        const parts = [`${result.sent} sent`, `${result.skipped} skipped`];
+        if (result.errors > 0) parts.push(`${result.errors} errors`);
+        console.log(`  ✅ ${cmd} complete — ${parts.join(", ")}`);
         for (const e of result.entries) {
           if (e.status === "error" && e.error) {
             console.error(`  ⚠️  [${e.type}] ${e.error}`);
@@ -576,26 +569,26 @@ for (const [cmd, type, desc] of [
 
 program
   .command("config")
-  .description("설정 관리")
-  .option("--set-passphrase", "암호화 passphrase 설정")
-  .option("--email <address>", "수신 이메일 주소 설정")
-  .option("--smtp-host <host>", "SMTP 호스트 (기본: smtp.gmail.com)")
-  .option("--smtp-port <port>", "SMTP 포트 (기본: 587)")
-  .option("--smtp-user <user>", "SMTP 사용자 (발신 이메일)")
-  .option("--smtp-pass [pass]", "SMTP 앱 비밀번호 설정")
-  .option("--provider <provider>", "이메일 provider (gmail | resend | custom_smtp)")
-  .option("--resend-key <key>", "Resend API 키 설정")
-  .option("--vacation <dates...>", "휴가 등록 (YYYY-MM-DD)")
-  .option("--vacation-list", "등록된 휴가 목록 조회")
-  .option("--vacation-clear <date>", "휴가 삭제 (YYYY-MM-DD)")
-  .option("--vacation-type <type>", "휴가 유형 (vacation | sick | holiday | half | other)", "vacation")
+  .description("Configuration management")
+  .option("--set-passphrase", "Set encryption passphrase")
+  .option("--email <address>", "Set recipient email address")
+  .option("--smtp-host <host>", "SMTP host (default: smtp.gmail.com)")
+  .option("--smtp-port <port>", "SMTP port (default: 587)")
+  .option("--smtp-user <user>", "SMTP user (sender email)")
+  .option("--smtp-pass [pass]", "Set SMTP app password")
+  .option("--provider <provider>", "Email provider (gmail | resend | custom_smtp)")
+  .option("--resend-key <key>", "Set Resend API key")
+  .option("--vacation <dates...>", "Register vacation (YYYY-MM-DD)")
+  .option("--vacation-list", "List registered vacations")
+  .option("--vacation-clear <date>", "Remove vacation (YYYY-MM-DD)")
+  .option("--vacation-type <type>", "Vacation type (vacation | sick | holiday | half | other)", "vacation")
   .option("--d1-account <id>", "Cloudflare Account ID")
   .option("--d1-database <id>", "D1 Database ID")
   .option("--d1-token <token>", "Cloudflare API Token")
-  .option("--machine-name <name>", "이 머신의 식별 이름")
-  .option("--ai-provider <provider>", "AI 요약 provider (cloudflare | anthropic | claude-code | auto)")
-  .option("--setup-d1", "D1 설정 위저드")
-  .option("--setup", "설정 위저드 실행")
+  .option("--machine-name <name>", "Machine identifier name")
+  .option("--ai-provider <provider>", "AI summary provider (cloudflare | anthropic | claude-code | auto)")
+  .option("--setup-d1", "D1 setup wizard")
+  .option("--setup", "Run setup wizard")
   .action(async (options) => {
     const storage = new SqlJsAdapter();
     try {
@@ -613,7 +606,7 @@ program
       if (options.setPassphrase) {
         hasAction = true;
         console.log(
-          "  Passphrase 설정은 아직 준비 중입니다. (coming soon)",
+          "  Passphrase setup is not yet available. (coming soon)",
         );
       }
 
@@ -653,14 +646,14 @@ program
           password = options.smtpPass;
         } else {
           // 플래그만 — 프롬프트로 입력
-          password = await promptPassword("  SMTP 앱 비밀번호: ");
+          password = await promptPassword("  SMTP app password: ");
         }
         if (password) {
           await storage.setConfig("smtp_pass", password);
           console.log("  smtp_pass = ********");
           changed = true;
         } else {
-          console.log("  비밀번호가 입력되지 않았습니다.");
+          console.log("  No password entered.");
         }
       }
 
@@ -689,7 +682,7 @@ program
             label: null,
             createdAt: Date.now(),
           });
-          console.log(`  휴가 등록: ${date} (${vacationType})`);
+          console.log(`  Vacation registered: ${date} (${vacationType})`);
         }
         changed = true;
       }
@@ -702,9 +695,9 @@ program
         const yearEnd = `${now.getFullYear()}-12-31`;
         const vacations = await storage.getVacationsByRange(yearStart, yearEnd);
         if (vacations.length === 0) {
-          console.log("  등록된 휴가가 없습니다.");
+          console.log("  No vacations registered.");
         } else {
-          console.log(`\n  📅 등록된 휴가 (${vacations.length}건)`);
+          console.log(`\n  📅 Registered vacations (${vacations.length})`);
           for (const v of vacations) {
             console.log(`    ${v.date}  ${v.type}  (${v.source})`);
           }
@@ -715,7 +708,7 @@ program
       if (options.vacationClear) {
         hasAction = true;
         await storage.deleteVacation(options.vacationClear);
-        console.log(`  휴가 삭제: ${options.vacationClear}`);
+        console.log(`  Vacation removed: ${options.vacationClear}`);
         changed = true;
       }
 
@@ -733,7 +726,7 @@ program
       }
       if (options.d1Token) {
         hasAction = true;
-        console.log("  Cloudflare 계정 확인 중...");
+        console.log("  Verifying Cloudflare account...");
         const { autoSetupD1 } = await import("./cloud/d1-auto-setup.js");
         try {
           const existingAccountId = await storage.getConfig("d1_account_id");
@@ -741,11 +734,11 @@ program
           await storage.setConfig("d1_api_token", options.d1Token);
           await storage.setConfig("d1_account_id", result.accountId);
           await storage.setConfig("d1_database_id", result.databaseId);
-          console.log(`  ✅ 계정: ${result.accountName} (${result.accountId.slice(0, 8)}...)`);
+          console.log(`  ✅ Account: ${result.accountName} (${result.accountId.slice(0, 8)}...)`);
           if (result.created) {
-            console.log(`  ✅ 'sincenety' DB 생성 (${result.databaseId.slice(0, 8)}...)`);
+            console.log(`  ✅ 'sincenety' DB created (${result.databaseId.slice(0, 8)}...)`);
           } else {
-            console.log(`  ✅ 'sincenety' DB 발견 (${result.databaseId.slice(0, 8)}...)`);
+            console.log(`  ✅ 'sincenety' DB found (${result.databaseId.slice(0, 8)}...)`);
           }
           // Auto machine ID
           const { getMachineId } = await import("./util/machine-id.js");
@@ -757,10 +750,10 @@ program
           const client = new D1Client(result.accountId, result.databaseId, options.d1Token);
           const { ensureD1Schema } = await import("./cloud/d1-schema.js");
           await ensureD1Schema(client);
-          console.log("  ✅ D1 스키마 세팅 완료!");
+          console.log("  ✅ D1 schema setup complete!");
           changed = true;
         } catch (err) {
-          console.error(`  ❌ D1 설정 실패: ${err instanceof Error ? err.message : String(err)}`);
+          console.error(`  ❌ D1 setup failed: ${err instanceof Error ? err.message : String(err)}`);
         }
       }
       if (options.machineName) {
@@ -773,7 +766,7 @@ program
         hasAction = true;
         const validProviders = ["cloudflare", "anthropic", "claude-code", "auto"];
         if (!validProviders.includes(options.aiProvider)) {
-          console.log(`  ❌ 유효한 값: ${validProviders.join(", ")}`);
+          console.log(`  ❌ Valid values: ${validProviders.join(", ")}`);
         } else {
           await storage.setConfig("ai_provider", options.aiProvider);
           console.log(`  ai_provider = ${options.aiProvider}`);
@@ -782,13 +775,13 @@ program
       }
       if (options.setupD1) {
         hasAction = true;
-        console.log("  D1 설정: sincenety config --d1-token <API_TOKEN>");
-        console.log("  토큰만으로 계정/DB/머신 자동 감지됩니다.");
+        console.log("  D1 setup: sincenety config --d1-token <API_TOKEN>");
+        console.log("  Account/DB/machine auto-detected from token.");
         return;
       }
 
       if (changed) {
-        console.log("  설정이 저장되었습니다.");
+        console.log("  Configuration saved.");
       }
 
       // 아무 옵션도 없으면 상태 테이블 출력
@@ -802,46 +795,18 @@ program
 
 // ─── schedule 명령 ──────────────────────────────────────
 
-program
-  .command("schedule")
-  .description("자동 갈무리 스케줄 관리")
-  .option("--install", "스케줄 설치 (기본 18:00)")
-  .option("--uninstall", "스케줄 해제")
-  .option("--status", "스케줄 상태 확인")
-  .option("--time <time>", "실행 시간 (예: 19:00)", "18:00")
-  .action(async (options) => {
-    try {
-      if (options.uninstall) {
-        await uninstallSchedule();
-      } else if (options.status) {
-        const status = await getScheduleStatus();
-        console.log(`  스케줄 상태: ${status}`);
-      } else if (options.install) {
-        await installSchedule({ time: options.time });
-      } else {
-        console.log("  사용법:");
-        console.log("    sincenety schedule --install");
-        console.log("    sincenety schedule --install --time 19:00");
-        console.log("    sincenety schedule --uninstall");
-        console.log("    sincenety schedule --status");
-      }
-    } catch (err) {
-      console.error(
-        `  ❌ ${err instanceof Error ? err.message : String(err)}`,
-      );
-      process.exit(1);
-    }
-  });
+// schedule 명령 — 비활성화 (향후 재구현 예정)
+// program.command("schedule") ...
 
 // ─── sync 명령 ─────────────────────────────────────────
 
 program
   .command("sync")
-  .description("D1 중앙 DB 동기화")
-  .option("--push", "로컬 → D1 push")
-  .option("--pull-config", "D1 → 로컬 공유 설정 가져오기")
-  .option("--status", "동기화 상태 확인")
-  .option("--init", "D1 스키마 초기 생성")
+  .description("D1 cloud DB sync")
+  .option("--push", "Push local → D1")
+  .option("--pull-config", "Pull shared config from D1")
+  .option("--status", "Check sync status")
+  .option("--init", "Initialize D1 schema")
   .action(async (options) => {
     const storage = new SqlJsAdapter();
     try {
@@ -853,29 +818,29 @@ program
 
       const client = await loadD1Client(storage);
       if (!client) {
-        console.log("  D1 설정이 필요합니다:");
+        console.log("  D1 setup required:");
         console.log("    sincenety config --d1-token <API_TOKEN>");
-        console.log("  (토큰만으로 계정/DB 자동 감지)");
+        console.log("  (Account/DB auto-detected from token)");
         return;
       }
 
       const machineId = await getAutoMachineId(storage);
 
       if (options.init) {
-        console.log("  D1 스키마 생성 중...");
+        console.log("  Creating D1 schema...");
         await ensureD1Schema(client);
-        console.log("  ✅ D1 스키마 생성 완료");
+        console.log("  ✅ D1 schema created");
         return;
       }
 
       if (options.status) {
         const status = await getSyncStatus(storage, client, machineId);
-        console.log("\n  D1 동기화 상태");
+        console.log("\n  D1 sync status");
         console.log("  ┌────────────────┬──────────────────────┐");
-        console.log(`  │ 설정           │ ${status.configured ? "✅ 완료" : "❌ 미설정"}${"".padEnd(14)} │`);
-        console.log(`  │ D1 연결        │ ${status.d1Reachable ? "✅ 정상" : "❌ 불가"}${"".padEnd(14)} │`);
-        console.log(`  │ 마지막 sync    │ ${status.lastSync ? new Date(status.lastSync).toLocaleString("ko-KR") : "(없음)"}${"".padEnd(Math.max(0, 20 - (status.lastSync ? new Date(status.lastSync).toLocaleString("ko-KR").length : 4)))} │`);
-        console.log(`  │ 미동기화       │ ~${status.pendingRows}건${"".padEnd(17)} │`);
+        console.log(`  │ Configured     │ ${status.configured ? "✅ yes" : "❌ no"}${"".padEnd(14)} │`);
+        console.log(`  │ D1 connection  │ ${status.d1Reachable ? "✅ ok" : "❌ fail"}${"".padEnd(14)} │`);
+        console.log(`  │ Last sync      │ ${status.lastSync ? new Date(status.lastSync).toISOString().slice(0, 19) : "(none)"}${"".padEnd(Math.max(0, 20 - (status.lastSync ? 19 : 6)))} │`);
+        console.log(`  │ Pending        │ ~${status.pendingRows} rows${"".padEnd(15)} │`);
         console.log(`  │ machine_id     │ ${machineId.padEnd(20)} │`);
         console.log("  └────────────────┴──────────────────────┘");
 
@@ -885,9 +850,9 @@ program
             "SELECT machine_id, platform, label, last_sync_at FROM machines ORDER BY last_sync_at DESC"
           );
           if (machinesRes.results.length > 0) {
-            console.log("\n  등록된 머신:");
+            console.log("\n  Registered machines:");
             for (const m of machinesRes.results) {
-              const lastSync = m.last_sync_at ? new Date(m.last_sync_at).toLocaleString("ko-KR") : "(없음)";
+              const lastSync = m.last_sync_at ? new Date(m.last_sync_at).toISOString().slice(0, 19) : "(none)";
               const label = m.label ? ` (${m.label})` : "";
               console.log(`    ${m.machine_id}${label} — ${m.platform} — ${lastSync}`);
             }
@@ -898,25 +863,25 @@ program
       }
 
       if (options.pullConfig) {
-        console.log("  D1에서 공유 설정 가져오는 중...");
+        console.log("  Pulling shared config from D1...");
         const changed = await pullConfigFromD1(storage, client);
         if (changed.length > 0) {
-          console.log(`  ✅ ${changed.length}개 설정 가져옴: ${changed.join(", ")}`);
+          console.log(`  ✅ ${changed.length} config(s) pulled: ${changed.join(", ")}`);
         } else {
-          console.log("  변경된 설정이 없습니다.");
+          console.log("  No config changes.");
         }
         return;
       }
 
       // Default: push
-      console.log(`  D1 push 중... (machine: ${machineId})`);
+      console.log(`  Pushing to D1... (machine: ${machineId})`);
       await ensureD1Schema(client);
       const result = await pushToD1(storage, client, machineId);
       const total = result.pushed.sessions + result.pushed.gatherReports + result.pushed.dailyReports + result.pushed.emailLogs + result.pushed.vacations;
-      console.log(`  ✅ D1 sync 완료 — ${total}건 push`);
-      if (result.pushed.config > 0) console.log(`     공유 설정 ${result.pushed.config}건 동기화`);
+      console.log(`  ✅ D1 sync complete — ${total} rows pushed`);
+      if (result.pushed.config > 0) console.log(`     ${result.pushed.config} shared config(s) synced`);
       if (result.errors.length > 0) {
-        console.log(`  ⚠️  ${result.errors.length}건 오류: ${result.errors.slice(0, 3).join(", ")}`);
+        console.log(`  ⚠️  ${result.errors.length} error(s): ${result.errors.slice(0, 3).join(", ")}`);
       }
     } catch (err) {
       console.error(`  ❌ ${err instanceof Error ? err.message : String(err)}`);
@@ -974,5 +939,124 @@ function promptPassword(prompt: string): Promise<string> {
     }
   });
 }
+
+// ─── default action (no subcommand) ────────────────────
+// sincenety (no args) = full pipeline: air → circle → out
+
+program
+  .option("--token <token>", "Cloudflare D1 API token (saves to config)")
+  .option("--key <key>", "Resend API key (saves to config)")
+  .option("--email <address>", "Recipient email address (saves to config)")
+  .action(async (options) => {
+  const storage = new SqlJsAdapter();
+  try {
+    await storage.initialize();
+
+    // ── Scope check ──
+    let scope = await readScope();
+    if (!scope) {
+      console.log("");
+      console.log("  ── Choose scope ──");
+      scope = await promptScope();
+    }
+
+    // Inline setup: --token / --key / --email → save to config and proceed
+    if (options.token) {
+      console.log("  Verifying Cloudflare account...");
+      const { autoSetupD1 } = await import("./cloud/d1-auto-setup.js");
+      try {
+        const existingAccountId = await storage.getConfig("d1_account_id");
+        const result = await autoSetupD1(options.token, existingAccountId || undefined);
+        await storage.setConfig("d1_api_token", options.token);
+        await storage.setConfig("d1_account_id", result.accountId);
+        await storage.setConfig("d1_database_id", result.databaseId);
+        const { getMachineId } = await import("./util/machine-id.js");
+        await storage.setConfig("machine_id", getMachineId());
+        const { D1Client } = await import("./cloud/d1-client.js");
+        const client = new D1Client(result.accountId, result.databaseId, options.token);
+        const { ensureD1Schema } = await import("./cloud/d1-schema.js");
+        await ensureD1Schema(client);
+        console.log(`  ✅ D1 ready (${result.accountName})`);
+      } catch (err) {
+        console.error(`  ❌ D1 setup failed: ${err instanceof Error ? err.message : String(err)}`);
+        process.exit(1);
+      }
+    }
+    if (options.key) {
+      await storage.setConfig("resend_key", options.key);
+      await storage.setConfig("provider", "resend");
+      console.log("  ✅ Resend API key saved");
+    }
+    if (options.email) {
+      await storage.setConfig("email", options.email);
+      console.log(`  ✅ Email: ${options.email}`);
+    }
+
+    // Check required settings: D1 + email (SMTP or Resend)
+    const [d1Token, smtpPass, resendKey] = await Promise.all([
+      storage.getConfig("d1_api_token"),
+      storage.getConfig("smtp_pass"),
+      storage.getConfig("resend_key"),
+    ]);
+
+    const missingD1 = !d1Token;
+    const missingEmail = !smtpPass && !resendKey;
+
+    if (missingD1 || missingEmail) {
+      console.log("");
+      console.log("  ⚠️  Required setup incomplete");
+      console.log("  ─────────────────────────────");
+      console.log("");
+      console.log("  Quick start (npx one-liner, all 3 flags required):");
+      console.log("");
+      console.log("    npx sincenety --token <D1_TOKEN> --key <RESEND_KEY> --email <ADDRESS>");
+      console.log("");
+      console.log("  How to create a D1 token:");
+      console.log("  ─────────────────────────────────────────────────");
+      console.log("  1. Sign up / Log in:  https://dash.cloudflare.com");
+      console.log("  2. Go to token page:  https://dash.cloudflare.com/profile/api-tokens");
+      console.log('  3. Click "Create Token" → "Create Custom Token"');
+      console.log("  4. Set permissions:");
+      console.log("       Account | Workers AI       | Read");
+      console.log("       Account | D1               | Edit");
+      console.log("       Account | Account Settings | Read");
+      console.log("  5. Account Resources → Include → your account");
+      console.log("  6. Create Token → Copy the token");
+      console.log("  ─────────────────────────────────────────────────");
+      console.log("");
+      console.log("  Missing:");
+      if (missingD1) {
+        console.log("    ❌ D1 cloud sync");
+      }
+      if (missingEmail) {
+        console.log("    ❌ Email delivery (Resend key: https://resend.com/api-keys)");
+      }
+      console.log("");
+      console.log("  Or configure interactively:");
+      console.log("    sincenety config --setup");
+      console.log("");
+      process.exit(1);
+    }
+
+    // Full pipeline: out internally runs circle → air
+    const { runOut } = await import("./core/out.js");
+    const result = await runOut(storage, { scope });
+    const parts = [`${result.sent} sent`, `${result.skipped} skipped`];
+    if (result.errors > 0) parts.push(`${result.errors} errors`);
+    console.log(`  ✅ sincenety complete — ${parts.join(", ")}`);
+    for (const e of result.entries) {
+      if (e.status === "error" && e.error) {
+        console.error(`  ⚠️  [${e.type}] ${e.error}`);
+      }
+    }
+  } catch (err) {
+    console.error(
+      `  ❌ ${err instanceof Error ? err.message : String(err)}`,
+    );
+    process.exit(1);
+  } finally {
+    await storage.close();
+  }
+});
 
 program.parse();

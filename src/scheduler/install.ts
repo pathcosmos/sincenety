@@ -43,12 +43,12 @@ function getDefaultCliPath(): string {
 function parseTime(time: string): { hour: number; minute: number } {
   const match = time.match(/^(\d{1,2}):(\d{2})$/);
   if (!match) {
-    throw new Error(`시간 형식이 올바르지 않습니다: ${time} (예: 18:00)`);
+    throw new Error(`Invalid time format: ${time} (e.g. 18:00)`);
   }
   const hour = parseInt(match[1], 10);
   const minute = parseInt(match[2], 10);
   if (hour < 0 || hour > 23 || minute < 0 || minute > 59) {
-    throw new Error(`유효하지 않은 시간: ${time}`);
+    throw new Error(`Invalid time: ${time}`);
   }
   return { hour, minute };
 }
@@ -137,10 +137,10 @@ async function installLaunchAgent(opts: {
   await execFileAsync("launchctl", ["load", plistPath]);
 
   const timeStr = `${String(opts.hour).padStart(2, "0")}:${String(opts.minute).padStart(2, "0")}`;
-  console.log(`  스케줄 설치 완료 (macOS LaunchAgent)`);
-  console.log(`  매일 ${timeStr}에 자동 갈무리 + 이메일 발송`);
+  console.log(`  Schedule installed (macOS LaunchAgent)`);
+  console.log(`  Daily auto-gather + email at ${timeStr}`);
   console.log(`  plist: ${plistPath}`);
-  console.log(`  로그: ${logDir}/`);
+  console.log(`  logs: ${logDir}/`);
 }
 
 async function installCrontab(opts: {
@@ -177,9 +177,9 @@ async function installCrontab(opts: {
   });
 
   const timeStr = `${String(opts.hour).padStart(2, "0")}:${String(opts.minute).padStart(2, "0")}`;
-  console.log(`  스케줄 설치 완료 (crontab)`);
-  console.log(`  매일 ${timeStr}에 자동 갈무리 + 이메일 발송`);
-  console.log(`  로그: ${logDir}/`);
+  console.log(`  Schedule installed (crontab)`);
+  console.log(`  Daily auto-gather + email at ${timeStr}`);
+  console.log(`  logs: ${logDir}/`);
 }
 
 /**
@@ -195,9 +195,9 @@ export async function uninstallSchedule(): Promise<void> {
         // 이미 언로드 상태
       }
       await unlink(plistPath);
-      console.log("  스케줄 해제 완료 (LaunchAgent 제거)");
+      console.log("  Schedule uninstalled (LaunchAgent removed)");
     } else {
-      console.log("  설치된 스케줄이 없습니다.");
+      console.log("  No schedule installed.");
     }
   } else {
     let existingCron = "";
@@ -205,7 +205,7 @@ export async function uninstallSchedule(): Promise<void> {
       const { stdout } = await execFileAsync("crontab", ["-l"]);
       existingCron = stdout;
     } catch {
-      console.log("  설치된 스케줄이 없습니다.");
+      console.log("  No schedule installed.");
       return;
     }
 
@@ -214,7 +214,7 @@ export async function uninstallSchedule(): Promise<void> {
     );
 
     if (lines.join("\n").trim() === existingCron.trim()) {
-      console.log("  설치된 스케줄이 없습니다.");
+      console.log("  No schedule installed.");
       return;
     }
 
@@ -223,7 +223,7 @@ export async function uninstallSchedule(): Promise<void> {
       // @ts-expect-error input is valid
       input: newCron,
     });
-    console.log("  스케줄 해제 완료 (crontab 항목 제거)");
+    console.log("  Schedule uninstalled (crontab entry removed)");
   }
 }
 
@@ -234,7 +234,7 @@ export async function getScheduleStatus(): Promise<string> {
   if (process.platform === "darwin") {
     const plistPath = getPlistPath();
     if (!existsSync(plistPath)) {
-      return "미설치";
+      return "not installed";
     }
     try {
       const content = await readFile(plistPath, "utf-8");
@@ -243,11 +243,11 @@ export async function getScheduleStatus(): Promise<string> {
       if (hourMatch && minMatch) {
         const h = hourMatch[1].padStart(2, "0");
         const m = minMatch[1].padStart(2, "0");
-        return `설치됨 — 매일 ${h}:${m} (macOS LaunchAgent)`;
+        return `installed — daily at ${h}:${m} (macOS LaunchAgent)`;
       }
-      return "설치됨 (macOS LaunchAgent)";
+      return "installed (macOS LaunchAgent)";
     } catch {
-      return "plist 파일 읽기 실패";
+      return "failed to read plist";
     }
   } else {
     try {
@@ -258,13 +258,13 @@ export async function getScheduleStatus(): Promise<string> {
         if (match) {
           const h = match[2].padStart(2, "0");
           const m = match[1].padStart(2, "0");
-          return `설치됨 — 매일 ${h}:${m} (crontab)`;
+          return `installed — daily at ${h}:${m} (crontab)`;
         }
-        return "설치됨 (crontab)";
+        return "installed (crontab)";
       }
-      return "미설치";
+      return "not installed";
     } catch {
-      return "미설치";
+      return "not installed";
     }
   }
 }

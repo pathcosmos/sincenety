@@ -17,8 +17,13 @@ import type { StorageAdapter, GatherReport } from "../storage/adapter.js";
 // Types
 // ---------------------------------------------------------------------------
 
+export type ScopeConfig =
+  | { mode: "global" }
+  | { mode: "project"; path: string };
+
 export interface AirOptions {
   historyPath?: string;
+  scope?: ScopeConfig;
 }
 
 export interface AirResult {
@@ -138,11 +143,17 @@ export async function runAir(
   const details = await enrichSessionsFromJsonl(baseSessions);
 
   // SessionDetail → SessionGroup 호환
-  const sessions: SessionGroup[] = details.map((d) => ({
+  let sessions: SessionGroup[] = details.map((d) => ({
     ...d,
     messages: [],
     tags: [],
   }));
+
+  // Scope 필터링 — project 모드면 해당 프로젝트 세션만
+  if (options.scope?.mode === "project") {
+    const scopePath = options.scope.path;
+    sessions = sessions.filter((s) => s.project === scopePath);
+  }
 
   // 2. 날짜별 그룹핑
   const byDate = groupSessionsByDate(sessions);
@@ -176,7 +187,7 @@ export async function runAir(
     const markdown =
       daySessions.length > 0
         ? generateMarkdownReport(daySessions, dayStart, dayEnd)
-        : "# 활동 없음\n";
+        : "# No activity\n";
 
     // conversationTurns 포함 JSON 생성
     const reportJson = JSON.stringify(
@@ -247,10 +258,10 @@ export async function runAir(
       const machineId = await storage.getConfig("machine_id") ?? hostname();
       await ensureD1Schema(client);
       await pushToD1(storage, client, machineId);
-      console.error("  ☁️  D1 sync 완료");
+      console.error("  ☁️  D1 sync complete");
     }
   } catch (err) {
-    console.warn(`  ⚠️  D1 sync 실패: ${err instanceof Error ? err.message : String(err)}`);
+    console.warn(`  ⚠️  D1 sync failed: ${err instanceof Error ? err.message : String(err)}`);
   }
 
   // 백필 일수 계산

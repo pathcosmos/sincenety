@@ -22,6 +22,8 @@ export interface OutOptions {
   renderOnly?: boolean;
   /** 터미널에 미리보기만 출력 (발송하지 않음) */
   preview?: boolean;
+  /** 갈무리 범위: global(전체) 또는 project(특정 프로젝트만) */
+  scope?: { mode: "global" } | { mode: "project"; path: string };
 }
 
 export interface OutResultEntry {
@@ -153,7 +155,7 @@ export async function runOut(
 
   // 1. circle 실행으로 데이터 최신화
   // autoSummarize 내부에서 기존 daily_report가 있으면 스킵하므로 이중 요약 방지됨
-  await runCircle(storage);
+  await runCircle(storage, { scope: options?.scope });
 
   const today = new Date();
 
@@ -162,8 +164,8 @@ export async function runOut(
     const { isVacationDay } = await import("../vacation/manager.js");
     const todayStr = today.toISOString().slice(0, 10);
     if (await isVacationDay(storage, todayStr)) {
-      console.log("  📅 오늘은 휴가일입니다. 발신을 건너뜁니다.");
-      console.log("  (강제 발신: sincenety outd)");
+      console.log("  📅 Today is a vacation day. Skipping send.");
+      console.log("  (Force send: sincenety outd)");
       return result;
     }
   }
@@ -256,10 +258,10 @@ export async function runOut(
         const machineId = await storage.getConfig("machine_id") ?? hostname();
         await ensureD1Schema(client);
         await pushToD1(storage, client, machineId);
-        console.error("  ☁️  D1 sync 완료");
+        console.error("  ☁️  D1 sync complete");
       }
     } catch (err) {
-      console.warn(`  ⚠️  D1 sync 실패: ${err instanceof Error ? err.message : String(err)}`);
+      console.warn(`  ⚠️  D1 sync failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 

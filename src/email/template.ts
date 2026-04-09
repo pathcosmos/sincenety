@@ -47,11 +47,11 @@ function fmtDate(ms: number): string {
   return new Date(ms).toLocaleDateString("ko-KR", { year: "numeric", month: "long", day: "numeric", weekday: "long" });
 }
 function fmtDur(min: number): string {
-  if (min < 1) return "1분 미만";
-  if (min < 60) return `${Math.round(min)}분`;
+  if (min < 1) return "< 1 min";
+  if (min < 60) return `${Math.round(min)} min`;
   const h = Math.floor(min / 60);
   const m = Math.round(min % 60);
-  return m > 0 ? `${h}시간 ${m}분` : `${h}시간`;
+  return m > 0 ? `${h}h ${m}m` : `${h}h`;
 }
 function fmtTok(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
@@ -163,7 +163,7 @@ function wrapUpCard(s: SessionData, idx: number): string {
           <div style="margin-top:10px">
             <div style="font-size:11px">
               <span style="color:${C.accent}">📦</span>
-              <span style="color:${C.textDim};font-size:10px;font-weight:600;margin:0 6px">결과물</span>
+              <span style="color:${C.textDim};font-size:10px;font-weight:600;margin:0 6px">Result</span>
               <span style="color:${C.text};line-height:1.5">${esc(trunc(outcome, 100))}</span>
             </div>
           </div>
@@ -172,7 +172,7 @@ function wrapUpCard(s: SessionData, idx: number): string {
           <div style="margin-top:6px">
             <div style="font-size:11px">
               <span style="color:${C.accent}">🔄</span>
-              <span style="color:${C.textDim};font-size:10px;font-weight:600;margin:0 6px">흐름</span>
+              <span style="color:${C.textDim};font-size:10px;font-weight:600;margin:0 6px">Flow</span>
               <span style="color:${C.textMuted};line-height:1.5">${esc(trunc(flow, 120))}</span>
             </div>
           </div>` : ""}
@@ -180,7 +180,7 @@ function wrapUpCard(s: SessionData, idx: number): string {
           <div style="margin-top:6px">
             <div style="font-size:11px">
               <span style="color:${C.accent}">💡</span>
-              <span style="color:${C.textDim};font-size:10px;font-weight:600;margin:0 6px">의미</span>
+              <span style="color:${C.textDim};font-size:10px;font-weight:600;margin:0 6px">Significance</span>
               <span style="color:${C.cyan};line-height:1.5">${esc(trunc(significance, 120))}</span>
             </div>
           </div>
@@ -189,7 +189,7 @@ function wrapUpCard(s: SessionData, idx: number): string {
           <div style="margin-top:6px">
             <div style="font-size:11px">
               <span style="color:${C.accent}">➡️</span>
-              <span style="color:${C.textDim};font-size:10px;font-weight:600;margin:0 6px">후속</span>
+              <span style="color:${C.textDim};font-size:10px;font-weight:600;margin:0 6px">Next</span>
               <span style="color:${C.textMuted};font-style:italic;line-height:1.5">${esc(trunc(nextSteps, 100))}</span>
             </div>
           </div>` : ""}
@@ -253,7 +253,7 @@ export function renderEmailHtml(data: EmailData): string {
     const trimmedActions = s.actions.length > maxActions ? s.actions.slice(0, maxActions) : s.actions;
     const actionsHtml = trimmedActions.length > 0
       ? trimmedActions.map((a, i) => actionRow(a, i === trimmedActions.length - 1)).join("")
-        + (s.actions.length > maxActions ? `<tr><td style="padding:4px 0;font-size:10px;color:${C.textDim};text-align:center">… 외 ${s.actions.length - maxActions}건</td></tr>` : "")
+        + (s.actions.length > maxActions ? `<tr><td style="padding:4px 0;font-size:10px;color:${C.textDim};text-align:center">… +${s.actions.length - maxActions} more</td></tr>` : "")
       : `<tr><td style="padding:6px 0;font-size:11px;color:${C.textMuted}">${esc(trunc(s.description || s.summary, 100))}</td></tr>`;
 
     return `<tr><td style="padding:0 0 12px 0">
@@ -336,7 +336,7 @@ export function renderEmailHtml(data: EmailData): string {
         <td style="font-size:26px;line-height:1">📋</td>
         <td style="padding-left:10px">
           <div style="font-size:10px;color:${C.accent};font-weight:800;letter-spacing:2.5px">SINCENETY</div>
-          <div style="font-size:9px;color:${C.textDim};letter-spacing:1px;margin-top:1px">작업 갈무리 리포트</div>
+          <div style="font-size:9px;color:${C.textDim};letter-spacing:1px;margin-top:1px">Work Session Report</div>
         </td>
         <td align="right" style="font-size:12px;color:${C.textMuted}">${dateStr}</td>
       </tr>
@@ -348,24 +348,24 @@ export function renderEmailHtml(data: EmailData): string {
   <!-- ═══ 일일보고 Overview ═══ -->
   <tr><td style="padding:16px 0 8px 0">
     <div style="background:linear-gradient(135deg,#fef3c7,#fff7ed);border-radius:12px;border:1px solid #fcd34d;padding:18px 22px">
-      <div style="font-size:10px;color:#92400e;font-weight:800;letter-spacing:2px;margin-bottom:8px">📝 오늘의 요약</div>
+      <div style="font-size:10px;color:#92400e;font-weight:800;letter-spacing:2px;margin-bottom:8px">📝 Today's Summary</div>
       <div style="font-size:13px;color:#1a1a1a;line-height:1.7">${esc(data.dailyOverview)}</div>
     </div>
   </td></tr>` : ""}
 
   <!-- ═══ SECTION 1: 세션 갈무리 요약 (최상단) ═══ -->
-  ${sectionBar("01", "✍️", "세션 갈무리 요약", "#e0e7ff", "#3730a3")}
+  ${sectionBar("01", "✍️", "Session Summary", "#e0e7ff", "#3730a3")}
   ${wrapUpCards}
 
   <!-- ═══ SECTION 2: 오늘의 수치 ═══ -->
-  ${sectionBar("02", "📊", "오늘의 수치", "#dbeafe", "#1e40af")}
+  ${sectionBar("02", "📊", "Today's Stats", "#dbeafe", "#1e40af")}
   <tr><td style="padding:0 0 4px 0">
     <table width="100%" cellpadding="0" cellspacing="0">
       <tr>
-        ${statCard("🗂️", String(sessions.length), "세션", "#eff6ff", C.blue)}
-        ${statCard("💬", totalMsg > 999 ? fmtTok(totalMsg) : String(totalMsg), "메시지", "#ecfdf5", C.green)}
-        ${statCard("⚡", fmtTok(totalTok), "토큰", "#fffbeb", C.accent)}
-        ${statCard("⏱️", fmtDur(totalDur), "작업시간", "#f5f3ff", C.purple)}
+        ${statCard("🗂️", String(sessions.length), "sessions", "#eff6ff", C.blue)}
+        ${statCard("💬", totalMsg > 999 ? fmtTok(totalMsg) : String(totalMsg), "messages", "#ecfdf5", C.green)}
+        ${statCard("⚡", fmtTok(totalTok), "tokens", "#fffbeb", C.accent)}
+        ${statCard("⏱️", fmtDur(totalDur), "duration", "#f5f3ff", C.purple)}
       </tr>
     </table>
   </td></tr>
@@ -376,13 +376,13 @@ export function renderEmailHtml(data: EmailData): string {
       <tr>
         <td width="50%" style="padding:0 4px 0 0">
           <div style="background:#ecfdf5;border-radius:10px;border:1px solid ${C.border};padding:12px 16px;text-align:center">
-            <div style="font-size:9px;color:${C.textDim};letter-spacing:1px;text-transform:uppercase">💵 비용</div>
+            <div style="font-size:9px;color:${C.textDim};letter-spacing:1px;text-transform:uppercase">💵 cost</div>
             <div style="font-size:20px;color:${C.green};font-weight:800;margin-top:4px;font-family:${C.mono}">$${data.totalCostUsd.toFixed(2)}</div>
           </div>
         </td>
         <td width="50%" style="padding:0 0 0 4px">
           <div style="background:#f5f3ff;border-radius:10px;border:1px solid ${C.border};padding:12px 16px;text-align:center">
-            <div style="font-size:9px;color:${C.textDim};letter-spacing:1px;text-transform:uppercase">📊 캐시포함 토큰</div>
+            <div style="font-size:9px;color:${C.textDim};letter-spacing:1px;text-transform:uppercase">📊 Tokens (w/ cache)</div>
             <div style="font-size:20px;color:${C.purple};font-weight:800;margin-top:4px;font-family:${C.mono}">${fmtTok(data.totalCacheTokens ?? 0)}</div>
           </div>
         </td>
@@ -395,7 +395,7 @@ export function renderEmailHtml(data: EmailData): string {
     <div style="background:${C.card};border-radius:10px;border:1px solid ${C.border};padding:10px 16px">
       <table width="100%" cellpadding="0" cellspacing="0">
         <tr>
-          <td style="font-size:10px;color:${C.textDim}">입력/출력 비율</td>
+          <td style="font-size:10px;color:${C.textDim}">Input/Output ratio</td>
           <td align="right" style="font-size:10px;color:${C.textDim};font-family:${C.mono}">in ${fmtTok(totalIn)} · out ${fmtTok(totalOut)}</td>
         </tr>
       </table>
@@ -405,19 +405,19 @@ export function renderEmailHtml(data: EmailData): string {
       </div>
       <table width="100%" cellpadding="0" cellspacing="0" style="margin-top:4px">
         <tr>
-          <td style="font-size:9px;color:${C.blue}">● 입력 ${Math.round((totalIn / totalTok) * 100)}%</td>
-          <td align="right" style="font-size:9px;color:${C.purple}">● 출력 ${Math.round((totalOut / totalTok) * 100)}%</td>
+          <td style="font-size:9px;color:${C.blue}">● Input ${Math.round((totalIn / totalTok) * 100)}%</td>
+          <td align="right" style="font-size:9px;color:${C.purple}">● Output ${Math.round((totalOut / totalTok) * 100)}%</td>
         </tr>
       </table>
     </div>
   </td></tr>` : ""}
 
   <!-- ═══ SECTION 3: 세션별 상세 작업 로그 ═══ -->
-  ${sectionBar("03", "📌", "세션별 상세 작업 로그", "#f3f4f6", "#374151")}
+  ${sectionBar("03", "📌", "Session Detail Log", "#f3f4f6", "#374151")}
   ${sessionCards}
 
   <!-- ═══ SECTION 4: 하루의 성과 ═══ -->
-  ${sectionBar("04", "🎯", "하루의 성과", "#fef3c7", "#92400e")}
+  ${sectionBar("04", "🎯", "Today's Achievements", "#fef3c7", "#92400e")}
   <tr><td style="padding:0 0 8px 0">
     <div style="background:${C.white};border-radius:10px;border:1px solid ${C.border};padding:14px 18px">
       ${achieveCards}
@@ -429,7 +429,7 @@ export function renderEmailHtml(data: EmailData): string {
     <div style="height:1px;background:${C.border}"></div>
     <table width="100%" cellpadding="0" cellspacing="0" style="margin-top:10px">
       <tr>
-        <td style="font-size:9px;color:${C.textDim}">sincenety · 작업 갈무리 도구</td>
+        <td style="font-size:9px;color:${C.textDim}">sincenety · work session tracker</td>
         <td align="right" style="font-size:9px;color:${C.textDim};font-family:${C.mono}">${fmtTime(fromTimestamp)} → ${fmtTime(toTimestamp)}</td>
       </tr>
     </table>

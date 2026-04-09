@@ -25,9 +25,9 @@ interface AiSummary {
 }
 
 const TYPE_LABELS: Record<string, string> = {
-  daily: "일일보고",
-  weekly: "주간보고",
-  monthly: "월간보고",
+  daily: "Daily Report",
+  weekly: "Weekly Report",
+  monthly: "Monthly Report",
 };
 
 /**
@@ -172,7 +172,7 @@ export async function renderDailyEmail(
   const totalTokens = sessions.reduce((sum, s) => sum + s.inputTokens + s.outputTokens, 0);
   const totalTokensK = Math.round(totalTokens / 1000);
   const typeLabel = TYPE_LABELS[reportType] ?? reportType;
-  const subject = `[sincenety] ${date} ${typeLabel} — ${sessions.length}세션, ${totalMessages}msg, ${totalTokensK}Ktok`;
+  const subject = `[sincenety] ${date} ${typeLabel} — ${sessions.length} sessions, ${totalMessages}msg, ${totalTokensK}Ktok`;
 
   // 9. HTML 렌더
   let html: string;

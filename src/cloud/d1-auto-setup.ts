@@ -27,13 +27,13 @@ export async function autoSetupD1(apiToken: string, knownAccountId?: string): Pr
     const accountsRes = await fetch("https://api.cloudflare.com/client/v4/accounts?page=1&per_page=5", {
       headers: { Authorization: `Bearer ${apiToken}`, "Content-Type": "application/json" },
     });
-    if (!accountsRes.ok) throw new Error(`Cloudflare API 인증 실패 (${accountsRes.status})`);
+    if (!accountsRes.ok) throw new Error(`Cloudflare API auth failed (${accountsRes.status})`);
     const accountsJson = await accountsRes.json() as any;
     if (!accountsJson.success || !accountsJson.result?.length) {
       throw new Error(
-        "Cloudflare 계정을 찾을 수 없습니다. 토큰에 Account 읽기 권한이 없을 수 있습니다.\n" +
-        "  → 해결: sincenety config --d1-account <ACCOUNT_ID> 로 먼저 설정 후 --d1-token 을 다시 시도하세요.\n" +
-        "  → Account ID는 Cloudflare 대시보드 URL에서 확인: dash.cloudflare.com/<ACCOUNT_ID>/..."
+        "No Cloudflare account found. The token may lack Account read permission.\n" +
+        "  → Fix: run sincenety config --d1-account <ACCOUNT_ID> first, then retry --d1-token.\n" +
+        "  → Account ID can be found in the Cloudflare dashboard URL: dash.cloudflare.com/<ACCOUNT_ID>/..."
       );
     }
     const account = accountsJson.result[0];
@@ -46,7 +46,7 @@ export async function autoSetupD1(apiToken: string, knownAccountId?: string): Pr
     `https://api.cloudflare.com/client/v4/accounts/${accountId}/d1/database?name=sincenety`,
     { headers: { Authorization: `Bearer ${apiToken}`, "Content-Type": "application/json" } },
   );
-  if (!dbListRes.ok) throw new Error(`D1 데이터베이스 조회 실패 (${dbListRes.status})`);
+  if (!dbListRes.ok) throw new Error(`D1 database query failed (${dbListRes.status})`);
   const dbListJson = await dbListRes.json() as any;
 
   // Check if "sincenety" database exists
@@ -72,7 +72,7 @@ export async function autoSetupD1(apiToken: string, knownAccountId?: string): Pr
   );
   if (!createRes.ok) {
     const text = await createRes.text();
-    throw new Error(`D1 데이터베이스 생성 실패: ${text}`);
+    throw new Error(`D1 database creation failed: ${text}`);
   }
   const createJson = await createRes.json() as any;
 

@@ -177,8 +177,8 @@ export class SqlJsAdapter implements StorageAdapter {
         this.db = new SQL.Database(decrypted);
       } catch {
         throw new Error(
-          "DB 복호화 실패 — 키가 변경되었거나 파일이 손상되었습니다.\n" +
-            "  초기화하려면: rm ~/.sincenety/sincenety.db ~/.sincenety/sincenety.salt"
+          "DB decryption failed — key changed or file corrupted.\n" +
+            "  To reset: rm ~/.sincenety/sincenety.db ~/.sincenety/sincenety.salt"
         );
       }
     } else {
@@ -355,7 +355,7 @@ export class SqlJsAdapter implements StorageAdapter {
     this.ensureDb();
     const date = new Date(dateStr);
     if (isNaN(date.getTime())) {
-      throw new Error(`유효하지 않은 날짜: ${dateStr}`);
+      throw new Error(`Invalid date: ${dateStr}`);
     }
     const dayStart = new Date(
       date.getFullYear(), date.getMonth(), date.getDate()
@@ -482,7 +482,7 @@ export class SqlJsAdapter implements StorageAdapter {
   async getGatherReportsByDate(dateStr: string): Promise<GatherReport[]> {
     this.ensureDb();
     const date = new Date(dateStr);
-    if (isNaN(date.getTime())) throw new Error(`유효하지 않은 날짜: ${dateStr}`);
+    if (isNaN(date.getTime())) throw new Error(`Invalid date: ${dateStr}`);
     const dayStart = new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
     const dayEnd = dayStart + 86400000;
 
