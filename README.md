@@ -58,6 +58,7 @@ The pipeline can also be run in individual phases:
    - Auto-finalization: midnight finalizes previous day, Monday finalizes previous week, 1st finalizes previous month
    - Change detection: data hash comparison saves tokens
    - Vacation days get a [vacation] label automatically
+   - **Same-title session merge**: sessions with the same `projectName + normalizedTitle` are individually summarized, then consolidated into a single merged summary — eliminates duplicate entries and improves report coherence
 
 3. **`sincenety out`** — Smart email delivery
    - `out`: daily always, +weekly on Friday, +monthly on month-end
@@ -751,6 +752,15 @@ node dist/cli.js     # Direct execution
 
 ## Changelog
 
+### v0.8.2 (2026-04-09) — Circle same-title session merge summaries
+
+- **Same-title session merge in circle**: When multiple sessions share the same `projectName + normalizedTitle` within a date, circle now merges their individual summaries into a single consolidated summary. Each session is summarized individually first, then sessions in the same group are re-summarized together — outcome fields are joined, flows are concatenated with `→`, the longest significance is kept, and nextSteps comes from the last session. Merged entries show `(×N)` in the topic
+- **Applied to both summary paths**: The merge runs in `autoSummarize` (CLI auto-summary via Cloudflare AI / heuristic) and in the SKILL.md flow (Claude Code direct summary via `mergeGroup` hint in `circle --json` output)
+- **`mergeGroup` field in circleJson output**: Each session in `circle --json` output now includes a `mergeGroup` field (`projectName::normalizedTitle`) so Claude Code can identify merge-eligible sessions during SKILL.md step 2
+- **SKILL.md updated**: Step 2 now includes a "통합 재요약" (consolidated re-summary) phase — after individual session analysis, sessions sharing a `mergeGroup` are merged before overview generation
+- **New function**: `mergeSummariesByTitle()` in `circle.ts` — groups by `projectName + normalizeTitle(topic)`, merges stats (messageCount, tokens, duration), and consolidates summary fields
+- **Tests**: 135/135 passing (11 test files, +7 new tests for mergeSummariesByTitle)
+
 ### v0.8.1 (2026-04-09) — Circle cross-device merge + always-send policy
 
 - **Circle cross-device merge**: `autoSummarize` in `circle.ts` now pulls other devices' already-summarized sessions from D1 via `pullCrossDeviceReports`, deduplicates by `sessionId`, and generates a unified overview covering all machines — not just local work. Previously, circle only summarized local sessions; cross-device data was only used at email render time in `out`
@@ -820,6 +830,7 @@ node dist/cli.js     # Direct execution
 - [x] Scope selection: global (all projects) or project (specific path) mode
 - [x] Postinstall setup wizard: `npm install -g` triggers interactive 3-step setup
 - [x] Date-targeted reports: `--date yyyyMMdd` for out/outd/outw/outm commands
+- [x] Circle same-title session merge (individual summary → consolidated re-summary)
 - [ ] Passphrase encryption option
 - [ ] Similar task matching (TF-IDF)
 - [ ] External DB connectors (MariaDB/PostgreSQL)

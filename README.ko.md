@@ -60,6 +60,7 @@ $ sincenety circle
    - 자동 완료 처리: 자정→전날확정, 월요일→전주확정, 1일→전월확정
    - 변경 감지: data hash 비교로 토큰 절약
    - 휴가일에 [vacation] 라벨 자동 부여
+   - **동일 제목 세션 통합 요약**: 같은 `projectName + normalizedTitle` 세션을 개별 요약 후 통합 재요약 — 중복 제거 및 리포트 품질 향상
 
 3. **`sincenety out`** — 스마트 이메일 발신
    - `out`: 일일보고 항상 발송, 금요일에 +주간보고, 월말에 +월간보고
@@ -906,6 +907,15 @@ CLI를 7개 명령에서 3단계 파이프라인으로 전면 재구성:
 - **`src/util/machine-id.ts`**: 크로스플랫폼 하드웨어 ID 감지
 - **테스트 116개**: 기존 108 + cf-ai/machine-id 8개 추가
 
+### v0.8.2 (2026-04-09) — Circle 동일 제목 세션 통합 요약
+
+- **circle 동일 제목 세션 머지**: 같은 날짜 내 `projectName + normalizedTitle`이 동일한 세션이 여러 개 있으면, 개별 요약 후 통합 재요약을 생성. 각 세션의 outcome은 합산, flow는 `→`로 연결, significance는 가장 긴 것 채택, nextSteps는 마지막 세션 기준. 머지된 항목은 topic에 `(×N)` 표시
+- **양쪽 요약 경로 모두 적용**: `autoSummarize` (CLI 자동 요약 — Cloudflare AI / heuristic)와 SKILL.md 흐름 (Claude Code 직접 요약 — `circle --json`의 `mergeGroup` 힌트) 양쪽에서 동작
+- **`mergeGroup` 필드 추가**: `circle --json` 출력의 각 세션에 `mergeGroup` 필드 (`projectName::normalizedTitle`) 포함 — Claude Code가 SKILL.md 2단계에서 머지 대상을 식별
+- **SKILL.md 업데이트**: 2단계에 "통합 재요약" 지시 추가 — 개별 분석 후 같은 `mergeGroup` 세션을 합쳐서 통합 요약 생성
+- **신규 함수**: `circle.ts`의 `mergeSummariesByTitle()` — `projectName + normalizeTitle(topic)` 기준 그룹핑, 통계 합산(messageCount, tokens, duration), 요약 필드 통합
+- **테스트**: 135/135 통과 (11 파일, mergeSummariesByTitle 테스트 7개 추가)
+
 ### v0.8.1 (2026-04-09) — Circle 크로스 디바이스 머지 + 무조건 발신 정책
 
 - **Circle 크로스 디바이스 머지**: `circle.ts`의 `autoSummarize`가 D1에서 `pullCrossDeviceReports`로 다른 기기의 이미 요약된 세션을 pull하고, `sessionId` 기준 중복 제거 후 전체 기기의 작업을 통합 요약. 기존에는 circle이 로컬 세션만 요약하고 크로스 디바이스 데이터는 `out`의 이메일 렌더링에서만 사용했음
@@ -1001,6 +1011,7 @@ CLI를 7개 명령에서 3단계 파이프라인으로 전면 재구성:
 - [x] 크로스 디바이스 통합 리포트 (D1 pull + circle 머지 + 무조건 발신)
 - [x] 세션 제목 머지 (동일 제목 통합, ×N 카운트)
 - [x] 타이틀 추출 개선 (의미 있는 메시지 우선 + 폴백)
+- [x] circle 동일 제목 세션 통합 요약 (개별 요약 → 통합 재요약)
 - [ ] passphrase 설정 기능 완성
 - [ ] 다국어 보고서 출력 (KO 토글 옵션)
 - [ ] 보고서 내보내기 (PDF/HTML standalone)
@@ -1015,7 +1026,7 @@ CLI를 7개 명령에서 3단계 파이프라인으로 전면 재구성:
 | 지표 | 수치 |
 |------|------|
 | TypeScript 소스 파일 | 20개 |
-| 테스트 | 128/128 통과 |
+| 테스트 | 135/135 통과 |
 | CLI 명령어 | default + air, circle, out, outd, outw, outm, sync, config |
 | DB 테이블 | 7개 |
 | 의존성 (production) | 3개 (commander, nodemailer, sql.js) |
