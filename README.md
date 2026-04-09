@@ -100,18 +100,20 @@ No need to remember to start/stop tracking. `sincenety` parses `~/.claude/` data
 
 ### AI Summarization Engine
 
-Unified AI provider system with configurable routing:
+Unified AI provider system — **`ai_provider` config is respected in all environments** (CLI, cron, Claude Code):
 
-| Environment | AI Provider | Control |
-|-------------|------------|---------|
-| **CLI** (cron, terminal) | Workers AI (always) | Automatic with D1 token |
-| **Claude Code** (`/sincenety`) | User's choice | `ai_provider` config |
+| `ai_provider` | `circle` auto-summary | `gatherer` summary | Typical use case |
+|----------------|----------------------|-------------------|-----------------|
+| `cloudflare` | Workers AI (Qwen3-30B) → heuristic fallback | Workers AI | CLI / cron |
+| `anthropic` | Skip (no auto-summary) | Claude API (Haiku) | API key available |
+| `claude-code` | Skip (SKILL.md handles it) | Heuristic | Claude Code `/sincenety` |
+| `auto` (default) | Auto-detect: cloudflare only | Auto-detect | First-time setup |
 
 ```bash
-# AI provider configuration (controls behavior in Claude Code)
+# AI provider configuration (controls behavior in ALL environments)
 sincenety config --ai-provider cloudflare   # Use Workers AI
 sincenety config --ai-provider anthropic    # Use Claude API
-sincenety config --ai-provider claude-code  # Claude Code direct summary
+sincenety config --ai-provider claude-code  # Claude Code direct summary (SKILL.md)
 sincenety config --ai-provider auto         # Auto-detect (default)
 
 # Check current settings
@@ -121,10 +123,10 @@ sincenety config
 
 - **Cloudflare Workers AI (Qwen3-30B)** for Korean text summarization
 - D1 token only needed — no separate API key required
-- `circle` auto-summarizes: per-session topic/outcome/flow/significance + daily overview
-- `circle --json --summarize`: Workers AI summaries included in JSON output (for SKILL.md)
+- `circle` auto-summarizes when `ai_provider` is `cloudflare`: per-session topic/outcome/flow/significance + daily overview
+- `circle --json --summarize`: Workers AI summaries included in JSON output (requires `ai_provider = cloudflare`)
 - Free tier: 10,000 neurons/day (sufficient for personal use, ~300 summaries/day)
-- Heuristic fallback when no AI provider is available
+- **Heuristic fallback**: if Workers AI call fails for a session, falls back to heuristic summary (no data loss)
 
 ### Email AI Summary Integration
 
@@ -724,6 +726,17 @@ npm run dev          # Run with tsx (dev mode)
 npm test             # Run vitest tests (116 cases)
 node dist/cli.js     # Direct execution
 ```
+
+---
+
+## Changelog
+
+### v0.7.4 (2026-04-09) — AI provider routing bug fix
+
+- **Fixed `autoSummarize()` ignoring `ai_provider` config**: In CLI environment (`sincenety`, `sincenety circle`), Workers AI was called whenever D1 tokens existed, regardless of `ai_provider` setting. Now uses `resolveAiProvider()` to respect the config
+- **Added provider check to `circleJson --summarize`**: `--summarize` flag now only calls Workers AI when `ai_provider = cloudflare`
+- **Heuristic fallback on Workers AI failure**: When Workers AI fails for individual sessions, falls back to `summarizer.ts` heuristic summary (prevents data loss)
+- **Updated README AI Summarization section**: Corrected "CLI always uses Workers AI" → "`ai_provider` respected in all environments"
 
 ---
 

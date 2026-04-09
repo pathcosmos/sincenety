@@ -163,11 +163,12 @@ export async function circleJson(
     }
   }
 
-  // --summarize: Workers AI로 세션 요약을 JSON에 포함
+  // --summarize: Workers AI로 세션 요약을 JSON에 포함 (ai_provider가 cloudflare일 때만)
   if (options?.summarize) {
-    const { loadAiProviderConfig } = await import("./ai-provider.js");
+    const { resolveAiProvider, loadAiProviderConfig } = await import("./ai-provider.js");
+    const provider = await resolveAiProvider(storage);
     const aiConfig = await loadAiProviderConfig(storage);
-    if (aiConfig.accountId && aiConfig.apiToken) {
+    if (provider === "cloudflare" && aiConfig.accountId && aiConfig.apiToken) {
       const { summarizeSession: cfSummarize, generateOverview } = await import("../cloud/cf-ai.js");
       const cfConfig: CfAiConfig = { accountId: aiConfig.accountId, apiToken: aiConfig.apiToken };
 
@@ -281,17 +282,20 @@ export async function circleSave(
 
 /**
  * Cloudflare Workers AI로 변경된 날짜의 세션을 자동 요약.
- * D1 토큰(d1_account_id + d1_api_token)이 설정되어 있을 때만 동작.
+ * ai_provider가 "cloudflare"일 때만 동작 (d1 토큰 존재만으로 시도하지 않음).
  */
 export async function autoSummarize(
   storage: StorageAdapter,
   changedDates: string[],
 ): Promise<number> {
-  // Check if Cloudflare AI is available
-  const [accountId, apiToken] = await Promise.all([
-    storage.getConfig("d1_account_id"),
-    storage.getConfig("d1_api_token"),
-  ]);
+  // ai_provider 설정을 존중하여 cloudflare일 때만 Workers AI 사용
+  const { resolveAiProvider, loadAiProviderConfig } = await import("./ai-provider.js");
+  const provider = await resolveAiProvider(storage);
+  if (provider !== "cloudflare") return 0;
+
+  const aiConfig = await loadAiProviderConfig(storage);
+  const accountId = aiConfig.accountId;
+  const apiToken = aiConfig.apiToken;
   if (!accountId || !apiToken) return 0;
 
   const { summarizeSession, generateOverview } = await import("../cloud/cf-ai.js");
@@ -329,6 +333,17 @@ export async function autoSummarize(
             projectName: s.projectName,
             ...summary,
           });
+        } else {
+          // Workers AI 실패 시 heuristic fallback
+          const { summarizeSession: heuristicSummarize } = await import("./summarizer.js");
+          const fallback = await heuristicSummarize(
+            { ...s, conversationTurns: turns } as any,
+          );
+          summaries.push({
+            sessionId: s.sessionId,
+            projectName: s.projectName ?? "",
+            ...fallback,
+          });
         }
       }
 
@@ -341,6 +356,7 @@ export async function autoSummarize(
           sessions: summaries,
         });
         summarized++;
+        const aiCount = summaries.filter((s) => s.topic).length;
         console.log(`  🤖 ${date} AI summary done (${summaries.length} sessions, Cloudflare AI)`);
       }
     } catch (err) {

@@ -103,27 +103,29 @@ $ sincenety circle
 
 ### AI 요약 엔진
 
-통합 AI provider 시스템으로 환경별 자동 라우팅:
+통합 AI provider 시스템 — **`ai_provider` 설정이 모든 환경(CLI, cron, Claude Code)에서 존중됩니다**:
 
-| 환경 | AI Provider | 제어 |
-|------|------------|------|
-| **CLI** (cron, 터미널) | Workers AI (항상) | D1 토큰만 있으면 자동 |
-| **Claude Code** (`/sincenety`) | 사용자 선택 | `ai_provider` 설정 |
+| `ai_provider` | `circle` 자동 요약 | `gatherer` 요약 | 사용 시나리오 |
+|----------------|-------------------|-----------------|-------------|
+| `cloudflare` | Workers AI (Qwen3-30B) → 실패 시 휴리스틱 | Workers AI | CLI / cron |
+| `anthropic` | 스킵 (자동 요약 없음) | Claude API (Haiku) | API 키 보유 시 |
+| `claude-code` | 스킵 (SKILL.md가 직접 처리) | 휴리스틱 | Claude Code `/sincenety` |
+| `auto` (기본값) | 자동 감지: cloudflare만 해당 | 자동 감지 | 초기 설정 |
 
 ```bash
-# AI provider 설정 (Claude Code 환경에서의 동작 제어)
+# AI provider 설정 (모든 환경에서의 동작 제어)
 sincenety config --ai-provider cloudflare   # Workers AI 사용
 sincenety config --ai-provider anthropic    # Claude API 사용
-sincenety config --ai-provider claude-code  # Claude Code 직접 요약
+sincenety config --ai-provider claude-code  # Claude Code 직접 요약 (SKILL.md)
 sincenety config --ai-provider auto         # 자동 감지 (기본값)
 ```
 
 - **Cloudflare Workers AI (Qwen3-30B)** 한국어 텍스트 요약 특화
 - D1 토큰만 있으면 자동 활성화 — 별도 API 키 불필요
-- `circle` 실행 시 자동 요약: 세션별 topic/outcome/flow/significance + 일일 overview
-- `circle --json --summarize`: Workers AI 요약을 JSON에 포함 (SKILL.md cloudflare 모드)
+- `circle` 실행 시 `ai_provider`가 `cloudflare`일 때 자동 요약: 세션별 topic/outcome/flow/significance + 일일 overview
+- `circle --json --summarize`: Workers AI 요약을 JSON에 포함 (`ai_provider = cloudflare` 필요)
 - 무료 tier: 10,000 neurons/일 (개인 사용 충분, 하루 ~300회 요약 가능)
-- AI provider 미설정 시 휴리스틱 fallback
+- **휴리스틱 fallback**: Workers AI 개별 세션 호출 실패 시 휴리스틱 요약으로 대체 (데이터 손실 없음)
 
 ### 이메일 AI 요약 통합
 
@@ -883,6 +885,13 @@ CLI를 7개 명령에서 3단계 파이프라인으로 전면 재구성:
 - **`src/cloud/d1-auto-setup.ts`**: Token-only 자동 설정
 - **`src/util/machine-id.ts`**: 크로스플랫폼 하드웨어 ID 감지
 - **테스트 116개**: 기존 108 + cf-ai/machine-id 8개 추가
+
+### v0.7.4 (2026-04-09) — AI provider 라우팅 버그 수정
+
+- **`autoSummarize()` ai_provider 미존중 버그 수정**: CLI 환경(`sincenety`, `sincenety circle`)에서 `ai_provider` 설정과 무관하게 D1 토큰만 있으면 Workers AI를 호출하던 버그 수정. 이제 `resolveAiProvider()`를 통해 `ai_provider` 설정을 존중
+- **`circleJson --summarize` provider 체크 추가**: `--summarize` 플래그도 `ai_provider = cloudflare`일 때만 Workers AI 호출
+- **Workers AI 실패 시 heuristic fallback**: 개별 세션에서 Workers AI가 실패하면 `summarizer.ts`의 heuristic 요약으로 대체 (데이터 손실 방지)
+- **README AI 요약 엔진 섹션 갱신**: "CLI에서는 항상 Workers AI" → "모든 환경에서 `ai_provider` 존중"으로 정정
 
 ### v0.7.2 (2026-04-09) — --date 옵션 + Data Flow 다이어그램 분리
 
