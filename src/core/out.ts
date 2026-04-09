@@ -24,6 +24,8 @@ export interface OutOptions {
   preview?: boolean;
   /** 갈무리 범위: global(전체) 또는 project(특정 프로젝트만) */
   scope?: import("../config/scope.js").ScopeConfig;
+  /** 대상 날짜 (yyyyMMdd, e.g. "20260409") — 미지정 시 오늘 */
+  date?: string;
 }
 
 export interface OutResultEntry {
@@ -50,6 +52,21 @@ function toDateStr(d: Date): string {
   const m = String(d.getMonth() + 1).padStart(2, "0");
   const day = String(d.getDate()).padStart(2, "0");
   return `${y}-${m}-${day}`;
+}
+
+/** yyyyMMdd → Date (로컬 자정). 유효하지 않으면 throw. */
+export function parseDateArg(raw: string): Date {
+  if (!/^\d{8}$/.test(raw)) {
+    throw new Error(`Invalid date format: "${raw}" (expected yyyyMMdd, e.g. 20260409)`);
+  }
+  const y = Number(raw.slice(0, 4));
+  const m = Number(raw.slice(4, 6)) - 1;
+  const d = Number(raw.slice(6, 8));
+  const date = new Date(y, m, d);
+  if (date.getFullYear() !== y || date.getMonth() !== m || date.getDate() !== d) {
+    throw new Error(`Invalid date: "${raw}" does not represent a valid calendar date`);
+  }
+  return date;
 }
 
 /**
@@ -157,7 +174,7 @@ export async function runOut(
   // autoSummarize 내부에서 기존 daily_report가 있으면 스킵하므로 이중 요약 방지됨
   await runCircle(storage, { scope: options?.scope });
 
-  const today = new Date();
+  const today = options?.date ? parseDateArg(options.date) : new Date();
 
   // 1.5. 휴가일 체크 — force가 아니면 스킵
   if (!options?.force) {

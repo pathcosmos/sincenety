@@ -15,7 +15,7 @@ const program = new Command();
 program
   .name("sincenety")
   .description("Claude Code work session tracker")
-  .version("0.7.1");
+  .version("0.7.2");
 
 // ─── setup reminder ─────────────────────────────────────
 
@@ -437,6 +437,7 @@ program
   .description("Smart report dispatch (auto-detect daily/weekly/monthly)")
   .option("--preview", "Preview only, do not send")
   .option("--render-only", "Output HTML/subject/recipient JSON (for Gmail MCP)")
+  .option("--date <yyyyMMdd>", "Target date (e.g. 20260409)")
   .option("--history", "Show recent send history")
   .action(async (options) => {
     const storage = new SqlJsAdapter();
@@ -504,6 +505,7 @@ program
       const result = await runOut(storage, {
         preview: options.preview,
         renderOnly: options.renderOnly,
+        date: options.date,
       });
       if (!options.renderOnly) {
         const parts = [`${result.sent} sent`, `${result.skipped} skipped`];
@@ -536,6 +538,7 @@ for (const [cmd, type, desc] of [
     .command(cmd)
     .description(desc)
     .option("--preview", "Preview only, do not send")
+    .option("--date <yyyyMMdd>", "Target date (e.g. 20260409)")
     .action(async (options) => {
       const storage = new SqlJsAdapter();
       try {
@@ -545,6 +548,7 @@ for (const [cmd, type, desc] of [
         const result = await runOut(storage, {
           force: type,
           preview: options.preview,
+          date: options.date,
         });
         const parts = [`${result.sent} sent`, `${result.skipped} skipped`];
         if (result.errors > 0) parts.push(`${result.errors} errors`);

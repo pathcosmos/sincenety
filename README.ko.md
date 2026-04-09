@@ -430,6 +430,12 @@ sincenety out --history
 sincenety outd    # 일일보고
 sincenety outw    # 주간보고
 sincenety outm    # 월간보고
+
+# 특정 날짜 지정 (yyyyMMdd)
+sincenety outd --date 20260408   # 4월 8일 일간보고
+sincenety outw --date 20260408   # 4월 6-12일 주간보고
+sincenety outm --date 20260408   # 2026년 4월 월간보고
+sincenety out --date 20260408    # 4월 8일 기준 스마트 발신
 ```
 
 ### sync — 클라우드 동기화 (Cloudflare D1)
@@ -571,52 +577,103 @@ sincenety/
 └── README.md
 ```
 
-### 데이터 흐름
+### 설치 흐름 (Install Flow)
 
 ```
-~/.claude/history.jsonl  ──→  세션 목록 추출 (sessionId + project)
-                                    │
-                                    ▼
-~/.claude/projects/[project]/[sessionId].jsonl  ──→  토큰/모델/타이밍/대화턴 추출
-                                    │
-                        ┌───────────┴───────────┐
-                        ▼                       ▼
-                  sincenety air           (날짜별 그룹핑)
-                  (checkpoint 백필,        (자정 경계)
-                   data hash 감지)
-                        │
-                        ▼
-                  gather_reports DB
-                        │
-           ┌────────────┼────────────┐
-           ▼            ▼            ▼
-     터미널 요약    air --json    circle
-     출력          (날짜별)     (자동 finalization)
-                                     │
-                        ┌────────────┼────────────┐
-                        ▼            ▼            ▼
-                  circle --json  circle --save  sincenety out
-                  (SKILL.md)    (daily_reports)  (스마트 발신)
-                                                      │
-                                        ┌─────────────┼─────────────┐
-                                        ▼             ▼             ▼
-                                    outd (일일)   outw (주간)   outm (월간)
-                                        │
-                                  4 providers:
-                                  Gmail MCP / Resend /
-                                  Gmail SMTP / Custom SMTP
-                                        │
-                                        ▼
-                                  sincenety sync
-                                  (out 완료 후 자동)
-                                        │
-                                        ▼
-                                  Cloudflare D1
-                                  (멀티머신 통합)
-                        │
-                        ▼
-                  Claude Code
-                  AI 요약 생성
+npm install -g sincenety@latest
+        │
+        ▼
+┌─ postinstall.js ─────────────────────────────────┐
+│                                                   │
+│  TTY 체크 ───→ TTY 없음? → "config --setup 실행"  │
+│       │                                           │
+│       ▼ (TTY 있음)                                │
+│  이미 설정 완료? ──→ 예 → "설정 유지됨"             │
+│       │                                           │
+│       ▼ (아니오)                                   │
+│                                                   │
+│  Step 1: 범위 선택                                 │
+│  ┌────────────────────────┐                       │
+│  │ 1) Global (전체)       │                       │
+│  │ 2) Project (특정 경로) │                       │
+│  └───────┬────────────────┘                       │
+│          │ → ~/.sincenety/scope.json              │
+│          ▼                                        │
+│  Step 2: D1 클라우드 동기화                        │
+│  ┌────────────────────────┐                       │
+│  │ D1 API 토큰 입력       │                       │
+│  │ → autoSetupD1()        │                       │
+│  │ → ensureD1Schema()     │                       │
+│  └───────┬────────────────┘                       │
+│          │ → ~/.sincenety/sincenety.db            │
+│          ▼                                        │
+│  Step 3: 이메일 설정                               │
+│  ┌────────────────────────┐                       │
+│  │ 1) Gmail SMTP          │                       │
+│  │ 2) Resend API          │                       │
+│  │ 3) Custom SMTP         │                       │
+│  └───────┬────────────────┘                       │
+│          │ → ~/.sincenety/sincenety.db            │
+│          ▼                                        │
+│  ✅ 준비 완료                                      │
+└───────────────────────────────────────────────────┘
+```
+
+### 실행 흐름 (Run Flow)
+
+```
+$ sincenety [--token T --key K --email E]
+        │
+        ▼
+   Scope 체크 ───→ 미설정? → 프롬프트 (global/project)
+        │
+        ▼
+   파라미터 체크 ──→ D1/email 미설정? → 설정 가이드 + exit
+        │
+        ▼
+┌─ runOut(scope) ──────────────────────────────────┐
+│                                                   │
+│  ┌─ air (환기) ──────────────────────────────┐    │
+│  │ ~/.claude/history.jsonl                   │    │
+│  │   → 세션 목록 (sessionId + project)       │    │
+│  │ ~/.claude/projects/[p]/[id].jsonl         │    │
+│  │   → 토큰 / 모델 / 타이밍 / 대화턴        │    │
+│  │                                           │    │
+│  │ scope 필터 (project 모드)                 │    │
+│  │ 날짜별 그룹핑 (자정 경계)                 │    │
+│  │ checkpoint 백필 + data hash               │    │
+│  │   → gather_reports DB                     │    │
+│  └───────────────────────────────────────────┘    │
+│                 │                                 │
+│                 ▼                                 │
+│  ┌─ circle (순환 정화) ──────────────────────┐    │
+│  │ 자동 확정 처리                            │    │
+│  │   (전날 / 지난주 / 전월)                  │    │
+│  │ Workers AI 요약 (Qwen3-30B)               │    │
+│  │   → daily_reports DB                      │    │
+│  └───────────────────────────────────────────┘    │
+│                 │                                 │
+│                 ▼                                 │
+│  ┌─ out (스마트 발신) ───────────────────────┐    │
+│  │ daily  — 항상 발송                        │    │
+│  │ weekly — 금요일 (또는 캐치업)             │    │
+│  │ monthly — 월말 (또는 캐치업)              │    │
+│  │ --date yyyyMMdd — 특정 날짜 지정          │    │
+│  │                                           │    │
+│  │ → Gmail MCP / Resend /                    │    │
+│  │   Gmail SMTP / Custom SMTP                │    │
+│  └───────────────────────────────────────────┘    │
+│                 │                                 │
+│                 ▼                                 │
+│  ┌─ sync (자동) ────────────────────────────┐     │
+│  │ 로컬 → Cloudflare D1 push               │     │
+│  │ (멀티머신 통합)                          │     │
+│  └──────────────────────────────────────────┘     │
+│                                                   │
+└───────────────────────────────────────────────────┘
+        │
+        ▼
+   ✅ sincenety complete — N sent, N skipped
 ```
 
 ### DB 스키마 (v4)

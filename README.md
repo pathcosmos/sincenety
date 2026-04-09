@@ -433,6 +433,12 @@ sincenety out --history
 sincenety outd    # daily report
 sincenety outw    # weekly report
 sincenety outm    # monthly report
+
+# Target specific date (yyyyMMdd)
+sincenety outd --date 20260408   # daily report for Apr 8
+sincenety outw --date 20260408   # weekly report for week of Apr 6-12
+sincenety outm --date 20260408   # monthly report for April 2026
+sincenety out --date 20260408    # smart dispatch as if today is Apr 8
 ```
 
 ### sync — Cloud Sync (Cloudflare D1)
@@ -570,52 +576,103 @@ sincenety/
 └── tsconfig.json
 ```
 
-### Data Flow
+### Install Flow
 
 ```
-~/.claude/history.jsonl  ──→  Extract session list (sessionId + project)
-                                    │
-                                    ▼
-~/.claude/projects/[project]/[sessionId].jsonl  ──→  Extract tokens/model/timing/turns
-                                    │
-                        ┌───────────┴───────────┐
-                        ▼                       ▼
-                  sincenety air           (date grouping)
-                  (checkpoint backfill,    (midnight boundary)
-                   data hash detection)
-                        │
-                        ▼
-                  gather_reports DB
-                        │
-           ┌────────────┼────────────┐
-           ▼            ▼            ▼
-     terminal       air --json    circle
-     summary        (per-date)   (auto-finalization)
-                                     │
-                        ┌────────────┼────────────┐
-                        ▼            ▼            ▼
-                  circle --json  circle --save  sincenety out
-                  (SKILL.md)    (daily_reports)  (smart dispatch)
-                                                      │
-                                        ┌─────────────┼─────────────┐
-                                        ▼             ▼             ▼
-                                    outd (daily)  outw (weekly)  outm (monthly)
-                                        │
-                                  4 providers:
-                                  Gmail MCP / Resend /
-                                  Gmail SMTP / Custom SMTP
-                                        │
-                                        ▼
-                                  sincenety sync
-                                  (auto after out)
-                                        │
-                                        ▼
-                                  Cloudflare D1
-                                  (multi-machine aggregation)
-                        │
-                        ▼
-                  Claude Code
-                  AI summary
+npm install -g sincenety@latest
+        │
+        ▼
+┌─ postinstall.js ─────────────────────────────────┐
+│                                                   │
+│  TTY check ───→ No TTY? → "Run config --setup"   │
+│       │                                           │
+│       ▼ (TTY)                                     │
+│  Already configured? ──→ Yes → "Updated. OK"      │
+│       │                                           │
+│       ▼ (No)                                      │
+│                                                   │
+│  Step 1: Scope                                    │
+│  ┌────────────────────────┐                       │
+│  │ 1) Global (all)        │                       │
+│  │ 2) Project (path)      │                       │
+│  └───────┬────────────────┘                       │
+│          │ → ~/.sincenety/scope.json              │
+│          ▼                                        │
+│  Step 2: D1 Cloud Sync                            │
+│  ┌────────────────────────┐                       │
+│  │ D1 API token input     │                       │
+│  │ → autoSetupD1()        │                       │
+│  │ → ensureD1Schema()     │                       │
+│  └───────┬────────────────┘                       │
+│          │ → ~/.sincenety/sincenety.db            │
+│          ▼                                        │
+│  Step 3: Email                                    │
+│  ┌────────────────────────┐                       │
+│  │ 1) Gmail SMTP          │                       │
+│  │ 2) Resend API          │                       │
+│  │ 3) Custom SMTP         │                       │
+│  └───────┬────────────────┘                       │
+│          │ → ~/.sincenety/sincenety.db            │
+│          ▼                                        │
+│  ✅ Ready                                         │
+└───────────────────────────────────────────────────┘
+```
+
+### Run Flow
+
+```
+$ sincenety [--token T --key K --email E]
+        │
+        ▼
+   Scope check ───→ missing? → prompt (global/project)
+        │
+        ▼
+   Param check ───→ missing D1/email? → show setup guide + exit
+        │
+        ▼
+┌─ runOut(scope) ──────────────────────────────────┐
+│                                                   │
+│  ┌─ air ─────────────────────────────────────┐    │
+│  │ ~/.claude/history.jsonl                   │    │
+│  │   → session list (sessionId + project)    │    │
+│  │ ~/.claude/projects/[p]/[id].jsonl         │    │
+│  │   → tokens / model / timing / turns       │    │
+│  │                                           │    │
+│  │ scope filter (project mode)               │    │
+│  │ date grouping (midnight boundary)         │    │
+│  │ checkpoint backfill + data hash           │    │
+│  │   → gather_reports DB                     │    │
+│  └───────────────────────────────────────────┘    │
+│                 │                                 │
+│                 ▼                                 │
+│  ┌─ circle ──────────────────────────────────┐    │
+│  │ auto-finalization                         │    │
+│  │   (yesterday / last week / last month)    │    │
+│  │ Workers AI summary (Qwen3-30B)            │    │
+│  │   → daily_reports DB                      │    │
+│  └───────────────────────────────────────────┘    │
+│                 │                                 │
+│                 ▼                                 │
+│  ┌─ out (smart dispatch) ────────────────────┐    │
+│  │ daily  — always                           │    │
+│  │ weekly — Friday (or catchup)              │    │
+│  │ monthly — month-end (or catchup)          │    │
+│  │ --date yyyyMMdd — target specific date    │    │
+│  │                                           │    │
+│  │ → Gmail MCP / Resend /                    │    │
+│  │   Gmail SMTP / Custom SMTP                │    │
+│  └───────────────────────────────────────────┘    │
+│                 │                                 │
+│                 ▼                                 │
+│  ┌─ sync (auto) ────────────────────────────┐     │
+│  │ push local → Cloudflare D1               │     │
+│  │ (multi-machine aggregation)              │     │
+│  └──────────────────────────────────────────┘     │
+│                                                   │
+└───────────────────────────────────────────────────┘
+        │
+        ▼
+   ✅ sincenety complete — N sent, N skipped
 ```
 
 ### Encryption

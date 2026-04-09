@@ -3,6 +3,7 @@ import {
   isLastDayOfMonth,
   determineReportTypes,
   getReportDateKey,
+  parseDateArg,
 } from "../src/core/out.js";
 
 // ---------------------------------------------------------------------------
@@ -139,5 +140,75 @@ describe("getReportDateKey", () => {
   it("monthly on first → same month", () => {
     const first = new Date(2026, 3, 1);
     expect(getReportDateKey("monthly", first)).toBe("2026-04-01");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// parseDateArg
+// ---------------------------------------------------------------------------
+
+describe("parseDateArg", () => {
+  it("valid yyyyMMdd → Date", () => {
+    const d = parseDateArg("20260408");
+    expect(d.getFullYear()).toBe(2026);
+    expect(d.getMonth()).toBe(3); // 0-based
+    expect(d.getDate()).toBe(8);
+  });
+
+  it("year-end → Dec 31", () => {
+    const d = parseDateArg("20281231");
+    expect(d.getFullYear()).toBe(2028);
+    expect(d.getMonth()).toBe(11);
+    expect(d.getDate()).toBe(31);
+  });
+
+  it("throws on short string", () => {
+    expect(() => parseDateArg("2026048")).toThrow("Invalid date format");
+  });
+
+  it("throws on non-numeric", () => {
+    expect(() => parseDateArg("2026040a")).toThrow("Invalid date format");
+  });
+
+  it("throws on invalid calendar date (Feb 30)", () => {
+    expect(() => parseDateArg("20260230")).toThrow("Invalid date");
+  });
+
+  it("throws on month 13", () => {
+    expect(() => parseDateArg("20261301")).toThrow("Invalid date");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// --date integration with helpers
+// ---------------------------------------------------------------------------
+
+describe("--date integration with helpers", () => {
+  it("daily key for specific date", () => {
+    expect(getReportDateKey("daily", parseDateArg("20260408"))).toBe("2026-04-08");
+  });
+
+  it("weekly key → Monday of that week (Wed Apr 8 → Mon Apr 6)", () => {
+    expect(getReportDateKey("weekly", parseDateArg("20260408"))).toBe("2026-04-06");
+  });
+
+  it("monthly key → 1st of that month", () => {
+    expect(getReportDateKey("monthly", parseDateArg("20260408"))).toBe("2026-04-01");
+  });
+
+  it("Friday date includes weekly in report types", () => {
+    const types = determineReportTypes(parseDateArg("20260410"), []);
+    expect(types).toContain("daily");
+    expect(types).toContain("weekly");
+  });
+
+  it("month-end date includes monthly in report types", () => {
+    expect(isLastDayOfMonth(parseDateArg("20260430"))).toBe(true);
+  });
+
+  it("mid-month non-Friday → daily only", () => {
+    // 2026-04-08 is Wednesday
+    const types = determineReportTypes(parseDateArg("20260408"), []);
+    expect(types).toEqual(["daily"]);
   });
 });
