@@ -203,7 +203,8 @@ Multi-machine data aggregation via Cloudflare D1:
 **v0.8.0** — When working on multiple machines (e.g., Mac + Linux), sessions from all devices are automatically merged into a single daily report:
 
 - **Push-before-pull**: local data is pushed to D1 first, then other devices' sessions are pulled for consolidation
-- **Email deduplication**: before sending, checks D1 if any device already sent the report for this date — prevents duplicate emails
+- **Circle cross-device merge**: `circle` (AI summarization) pulls other devices' sessions from D1 and generates a unified summary covering all machines — not just local work
+- **Always-send policy**: `out` always sends email regardless of whether another device already sent — no skip, no dedup
 - **Session merge by topic**: sessions with identical `projectName + title` are automatically merged — stats aggregated, best wrapUp selected, flow narratives concatenated
 - **Graceful fallback**: if D1 is unreachable, falls back to single-device local-only behavior
 - **Title extraction improvement**: sessions starting with slash commands (e.g., `/sincenety`) now get meaningful fallback titles instead of empty strings
@@ -661,8 +662,9 @@ $ sincenety [--token T --key K --email E]
 │  ┌─ circle ──────────────────────────────────┐    │
 │  │ auto-finalization                         │    │
 │  │   (yesterday / last week / last month)    │    │
+│  │ D1 cross-device session pull + merge      │    │
 │  │ Workers AI summary (Qwen3-30B)            │    │
-│  │   → daily_reports DB                      │    │
+│  │   → daily_reports DB (all devices)        │    │
 │  └───────────────────────────────────────────┘    │
 │                 │                                 │
 │                 ▼                                 │
@@ -677,7 +679,6 @@ $ sincenety [--token T --key K --email E]
 │  │ monthly — month-end (or catchup)          │    │
 │  │ --date yyyyMMdd — target specific date    │    │
 │  │                                           │    │
-│  │ D1 email dedup check (skip if sent)       │    │
 │  │ D1 cross-device session pull + merge      │    │
 │  │ Same-title session merge (×N)             │    │
 │  │                                           │    │
@@ -750,10 +751,17 @@ node dist/cli.js     # Direct execution
 
 ## Changelog
 
+### v0.8.1 (2026-04-09) — Circle cross-device merge + always-send policy
+
+- **Circle cross-device merge**: `autoSummarize` in `circle.ts` now pulls other devices' already-summarized sessions from D1 via `pullCrossDeviceReports`, deduplicates by `sessionId`, and generates a unified overview covering all machines — not just local work. Previously, circle only summarized local sessions; cross-device data was only used at email render time in `out`
+- **Always-send policy**: Removed cross-device email dedup check from `out.ts` — `out` now always sends email regardless of whether another device already sent for the same date+type. The previous behavior (`checkCrossDeviceEmailSent` → skip) blocked email delivery when another device had already run `sincenety`
+- **Architecture alignment**: The 3-phase pipeline now follows a clear separation — `air` collects per-device, `circle` summarizes all-devices, `out` always delivers
+- **Files changed**: `src/core/circle.ts` (D1 pull + merge in `autoSummarize`), `src/core/out.ts` (removed dedup skip block)
+- **Tests**: 128/128 passing (11 test files)
+
 ### v0.8.0 (2026-04-09) — Cross-device consolidated reports + session merge
 
 - **Cross-device consolidated reports**: When working on multiple machines, `out` now pushes local data to D1 first (pre-sync), then queries D1 for other devices' sessions. Sessions from all machines are merged into a single consolidated email report
-- **Email deduplication across devices**: Before sending, `out` checks D1 `email_logs` to see if any device already sent the report for this date+type — prevents duplicate daily emails from different machines
 - **Session merge by topic**: Sessions with the same `projectName + normalizedTitle` within a date are automatically merged in email reports — stats (messages, tokens, duration) are aggregated, the most detailed wrapUp is selected, flow narratives are concatenated with `→` separator. Merged sessions show `(×N)` count in the title
 - **Title extraction improvement**: Sessions starting with slash commands (e.g., `/sincenety`) now prefer meaningful messages (>5 chars) for titles; if none exist, falls back to `[projectName] session` instead of empty strings
 - **Graceful D1 fallback**: All cross-device features are wrapped in try/catch — if D1 is unreachable, falls back to single-device local-only behavior with no disruption
@@ -821,7 +829,7 @@ node dist/cli.js     # Direct execution
 - [x] Defensive sessionId matching (prefix fallback + auto-correction)
 - [x] claude-code summarization quality (turn preprocessing + SKILL.md 2-pass)
 - [x] Workers AI CLI sample report (GitHub Pages)
-- [x] Cross-device consolidated reports (D1 pull + email dedup)
+- [x] Cross-device consolidated reports (D1 pull + circle merge + always-send)
 - [x] Session merge by topic (same-title dedup with ×N count)
 - [x] Improved title extraction (meaningful message priority + fallback)
 - [ ] Report export (PDF/HTML standalone)

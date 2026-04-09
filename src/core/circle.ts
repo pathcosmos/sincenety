@@ -345,6 +345,8 @@ export async function circleSave(
  * 모든 ai_provider에서 동작 — cloudflare는 Workers AI, 그 외는 heuristic/API.
  * claude-code 모드에서도 heuristic 요약을 baseline으로 저장하여
  * SKILL.md circle --save로 Claude Code가 덮어쓰기 전까지 최소한의 요약을 보장.
+ *
+ * 크로스 디바이스: D1에서 다른 기기의 요약을 pull하여 통합 요약 생성.
  */
 export async function autoSummarize(
   storage: StorageAdapter,
@@ -366,6 +368,19 @@ export async function autoSummarize(
       cfSummarize = cfAi.summarizeSession;
       cfOverview = cfAi.generateOverview;
     }
+  }
+
+  // D1 클라이언트 로드 (크로스 디바이스 세션 pull용)
+  let d1Client: import("../cloud/d1-client.js").D1Client | null = null;
+  let machineId = "";
+  try {
+    const { loadD1Client, getAutoMachineId } = await import("../cloud/sync.js");
+    d1Client = await loadD1Client(storage);
+    if (d1Client) {
+      machineId = await getAutoMachineId(storage);
+    }
+  } catch {
+    // D1 미설정 시 로컬 전용
   }
 
   let summarized = 0;
@@ -412,6 +427,44 @@ export async function autoSummarize(
           projectName: s.projectName ?? "",
           ...fallback,
         });
+      }
+
+      // 크로스 디바이스: 다른 기기의 이미 요약된 세션을 pull하여 머지
+      if (d1Client && machineId) {
+        try {
+          const { pullCrossDeviceReports } = await import("../cloud/sync.js");
+          const remoteReports = await pullCrossDeviceReports(d1Client, machineId, date, "daily");
+          const localIds = new Set(summaries.map((s) => s.sessionId));
+          let remoteCount = 0;
+          for (const remote of remoteReports) {
+            try {
+              const remoteSessions = JSON.parse(remote.summaryJson || "[]");
+              for (const rs of remoteSessions) {
+                const rsId = rs.sessionId ?? "";
+                if (rsId && !localIds.has(rsId)) {
+                  summaries.push({
+                    sessionId: rsId,
+                    projectName: rs.projectName ?? "",
+                    topic: rs.topic ?? "",
+                    outcome: rs.outcome ?? "",
+                    flow: rs.flow ?? "",
+                    significance: rs.significance ?? "",
+                    nextSteps: rs.nextSteps ?? "",
+                  });
+                  localIds.add(rsId);
+                  remoteCount++;
+                }
+              }
+            } catch {
+              // 개별 리모트 파싱 실패 무시
+            }
+          }
+          if (remoteCount > 0) {
+            console.error(`  🔗 ${date}: ${remoteCount} sessions merged from other devices`);
+          }
+        } catch {
+          // D1 pull 실패 시 로컬 전용
+        }
       }
 
       if (summaries.length > 0) {

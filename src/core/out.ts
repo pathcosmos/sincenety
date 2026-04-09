@@ -226,23 +226,7 @@ export async function runOut(
     const reportType = type as "daily" | "weekly" | "monthly";
     const dateKey = getReportDateKey(reportType, today);
 
-    // 3.1. 크로스 디바이스: 다른 기기가 이미 발송했으면 skip
-    if (d1Client && !options?.renderOnly && !options?.preview) {
-      try {
-        const { checkCrossDeviceEmailSent } = await import("../cloud/sync.js");
-        const alreadySent = await checkCrossDeviceEmailSent(d1Client, dateKey, reportType);
-        if (alreadySent) {
-          console.error(`  ⏭️  ${reportType} ${dateKey}: already sent by another device`);
-          result.skipped++;
-          result.entries.push({ type: reportType, dateKey, status: "skipped" });
-          continue;
-        }
-      } catch {
-        // D1 체크 실패 시 로컬 전용 동작
-      }
-    }
-
-    // 3.2. 크로스 디바이스: 다른 기기의 세션 데이터 수집
+    // 3.1. 크로스 디바이스: 다른 기기의 세션 데이터 수집 (발신은 항상 수행)
     let crossDeviceSessions: SessionData[] | undefined;
     if (d1Client && machineId) {
       try {
