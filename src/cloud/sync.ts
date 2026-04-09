@@ -577,6 +577,61 @@ async function pushVacation(
   );
 }
 
+// ── Cross-device helpers (D1 pull) ──
+
+export interface CrossDeviceReport {
+  machineId: string;
+  summaryJson: string;
+  overview: string | null;
+  sessionCount: number;
+}
+
+/**
+ * D1에서 다른 기기의 daily_reports를 가져온다 (현재 기기 제외).
+ * 세션 요약 데이터(summaryJson)만 반환하여 토큰/대역폭을 절약한다.
+ */
+export async function pullCrossDeviceReports(
+  client: D1Client,
+  machineId: string,
+  date: string,
+  reportType: string,
+): Promise<CrossDeviceReport[]> {
+  const res = await client.query<{
+    machine_id: string;
+    summary_json: string;
+    overview: string | null;
+    session_count: number;
+  }>(
+    `SELECT machine_id, summary_json, overview, session_count
+     FROM daily_reports
+     WHERE report_date = ? AND report_type = ? AND machine_id != ?`,
+    [date, reportType, machineId],
+  );
+  return res.results.map((r) => ({
+    machineId: r.machine_id,
+    summaryJson: r.summary_json,
+    overview: r.overview,
+    sessionCount: r.session_count,
+  }));
+}
+
+/**
+ * D1에서 해당 날짜+유형의 이메일이 이미 발송되었는지 확인 (any machine).
+ */
+export async function checkCrossDeviceEmailSent(
+  client: D1Client,
+  date: string,
+  reportType: string,
+): Promise<boolean> {
+  const res = await client.query<{ cnt: number }>(
+    `SELECT COUNT(*) as cnt FROM email_logs
+     WHERE report_date = ? AND report_type = ? AND status = 'sent'
+     LIMIT 1`,
+    [date, reportType],
+  );
+  return (res.results[0]?.cnt ?? 0) > 0;
+}
+
 /**
  * timestamp를 YYYY-MM-DD 문자열로 변환
  */

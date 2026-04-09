@@ -198,6 +198,16 @@ Multi-machine data aggregation via Cloudflare D1:
 - **Machine ID**: hardware-based auto-detection (see below), `config --machine-name` override for custom identification
 - **Zero new dependencies**: uses native `fetch` for D1 REST API — no extra packages added
 
+### Cross-Device Consolidated Reports
+
+**v0.8.0** — When working on multiple machines (e.g., Mac + Linux), sessions from all devices are automatically merged into a single daily report:
+
+- **Push-before-pull**: local data is pushed to D1 first, then other devices' sessions are pulled for consolidation
+- **Email deduplication**: before sending, checks D1 if any device already sent the report for this date — prevents duplicate emails
+- **Session merge by topic**: sessions with identical `projectName + title` are automatically merged — stats aggregated, best wrapUp selected, flow narratives concatenated
+- **Graceful fallback**: if D1 is unreachable, falls back to single-device local-only behavior
+- **Title extraction improvement**: sessions starting with slash commands (e.g., `/sincenety`) now get meaningful fallback titles instead of empty strings
+
 ### Cloudflare API Token Setup
 
 1. Go to [dash.cloudflare.com/profile/api-tokens](https://dash.cloudflare.com/profile/api-tokens)
@@ -543,7 +553,8 @@ sincenety/
 │   │   └── markdown.ts         # Markdown report generator
 │   ├── email/
 │   │   ├── sender.ts           # nodemailer email sender
-│   │   ├── renderer.ts         # HTML email renderer (report → HTML)
+│   │   ├── renderer.ts         # HTML email renderer (report → HTML, cross-device merge)
+│   │   ├── merge-sessions.ts   # Session merge by topic (dedup same-title sessions)
 │   │   ├── resend.ts           # Resend API email provider
 │   │   ├── provider.ts         # Email provider abstraction (Gmail MCP/Resend/SMTP)
 │   │   └── template.ts         # Bright color-coded HTML email template
@@ -655,20 +666,28 @@ $ sincenety [--token T --key K --email E]
 │  └───────────────────────────────────────────┘    │
 │                 │                                 │
 │                 ▼                                 │
+│  ┌─ D1 pre-sync ────────────────────────────┐     │
+│  │ push local → D1 (my data first)          │     │
+│  └──────────────────────────────────────────┘     │
+│                 │                                 │
+│                 ▼                                 │
 │  ┌─ out (smart dispatch) ────────────────────┐    │
 │  │ daily  — always                           │    │
 │  │ weekly — Friday (or catchup)              │    │
 │  │ monthly — month-end (or catchup)          │    │
 │  │ --date yyyyMMdd — target specific date    │    │
 │  │                                           │    │
+│  │ D1 email dedup check (skip if sent)       │    │
+│  │ D1 cross-device session pull + merge      │    │
+│  │ Same-title session merge (×N)             │    │
+│  │                                           │    │
 │  │ → Gmail MCP / Resend /                    │    │
 │  │   Gmail SMTP / Custom SMTP                │    │
 │  └───────────────────────────────────────────┘    │
 │                 │                                 │
 │                 ▼                                 │
-│  ┌─ sync (auto) ────────────────────────────┐     │
-│  │ push local → Cloudflare D1               │     │
-│  │ (multi-machine aggregation)              │     │
+│  ┌─ D1 post-sync ───────────────────────────┐     │
+│  │ push email logs → D1                     │     │
 │  └──────────────────────────────────────────┘     │
 │                                                   │
 └───────────────────────────────────────────────────┘
@@ -731,6 +750,16 @@ node dist/cli.js     # Direct execution
 
 ## Changelog
 
+### v0.8.0 (2026-04-09) — Cross-device consolidated reports + session merge
+
+- **Cross-device consolidated reports**: When working on multiple machines, `out` now pushes local data to D1 first (pre-sync), then queries D1 for other devices' sessions. Sessions from all machines are merged into a single consolidated email report
+- **Email deduplication across devices**: Before sending, `out` checks D1 `email_logs` to see if any device already sent the report for this date+type — prevents duplicate daily emails from different machines
+- **Session merge by topic**: Sessions with the same `projectName + normalizedTitle` within a date are automatically merged in email reports — stats (messages, tokens, duration) are aggregated, the most detailed wrapUp is selected, flow narratives are concatenated with `→` separator. Merged sessions show `(×N)` count in the title
+- **Title extraction improvement**: Sessions starting with slash commands (e.g., `/sincenety`) now prefer meaningful messages (>5 chars) for titles; if none exist, falls back to `[projectName] session` instead of empty strings
+- **Graceful D1 fallback**: All cross-device features are wrapped in try/catch — if D1 is unreachable, falls back to single-device local-only behavior with no disruption
+- **New files**: `src/email/merge-sessions.ts` (session merge utility), `src/cloud/sync.ts` additions (`pullCrossDeviceReports`, `checkCrossDeviceEmailSent`)
+- **Tests**: 128/128 passing (11 test files)
+
 ### v0.7.7 (2026-04-09) — claude-code summarization quality + Workers AI CLI sample report
 
 - **claude-code summarization quality improvements**: When `ai_provider = claude-code`, `circle --json` now preprocesses `conversationTurns` before output — applies path/filename removal, single-word response filtering, 30-turn limit, and 200/300-char truncation (matching Workers AI's preprocessing). This reduces noise and improves Claude Code's direct summarization quality
@@ -792,6 +821,9 @@ node dist/cli.js     # Direct execution
 - [x] Defensive sessionId matching (prefix fallback + auto-correction)
 - [x] claude-code summarization quality (turn preprocessing + SKILL.md 2-pass)
 - [x] Workers AI CLI sample report (GitHub Pages)
+- [x] Cross-device consolidated reports (D1 pull + email dedup)
+- [x] Session merge by topic (same-title dedup with ×N count)
+- [x] Improved title extraction (meaningful message priority + fallback)
 - [ ] Report export (PDF/HTML standalone)
 
 ---

@@ -4,6 +4,7 @@
 
 import type { StorageAdapter } from "../storage/adapter.js";
 import { renderEmailHtml, type EmailData, type SessionData } from "./template.js";
+import { mergeSessionsByTopic } from "./merge-sessions.js";
 
 export interface RenderedEmail {
   subject: string;
@@ -38,6 +39,7 @@ export async function renderDailyEmail(
   storage: StorageAdapter,
   date: string,
   reportType: "daily" | "weekly" | "monthly" = "daily",
+  crossDeviceSessions?: SessionData[],
 ): Promise<RenderedEmail | null> {
   // 1. 수신자 확인
   const recipient = await storage.getConfig("email");
@@ -173,6 +175,19 @@ export async function renderDailyEmail(
   } else {
     return null;
   }
+
+  // 7.5. 크로스 디바이스 세션 머지 (다른 기기의 세션 추가)
+  if (crossDeviceSessions && crossDeviceSessions.length > 0) {
+    const localIds = new Set(sessions.map((s) => s.sessionId));
+    for (const cs of crossDeviceSessions) {
+      if (!localIds.has(cs.sessionId)) {
+        sessions.push(cs);
+      }
+    }
+  }
+
+  // 7.6. 동일 프로젝트+제목 세션 머지
+  sessions = mergeSessionsByTopic(sessions);
 
   if (sessions.length === 0) return null;
 

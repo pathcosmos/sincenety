@@ -286,9 +286,14 @@ export async function parseSessionJsonl(
   const durationMinutes = (endedAt - startedAt) / 60000;
   const totalTokens = inputTokens + outputTokens;
 
-  // Title: first non-slash user message, cleaned and truncated
-  const firstNonSlash = userTexts.find((t) => !isSlashCommand(t)) ?? userTexts[0] ?? "";
-  const title = truncate(cleanTitle(firstNonSlash), 100);
+  // Title: first meaningful (>5 chars) non-slash user message, cleaned and truncated
+  const meaningfulNonSlash = userTexts.find((t) => !isSlashCommand(t) && cleanTitle(t).length > 5);
+  const anyNonSlash = userTexts.find((t) => !isSlashCommand(t));
+  const titleCandidate = meaningfulNonSlash ?? anyNonSlash ?? "";
+  const projectLabel = project.split("/").filter(Boolean).pop() ?? project;
+  const title = titleCandidate
+    ? truncate(cleanTitle(titleCandidate), 100)
+    : `[${projectLabel}] session`;
   const summary = title;
 
   // Description: 의미 있는 사용자 입력을 정리하여 전체 작업 흐름 파악용

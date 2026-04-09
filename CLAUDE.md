@@ -119,6 +119,8 @@ sincenety/
 │   │   └── markdown.ts           # 마크다운 리포트 생성
 │   ├── email/
 │   │   ├── sender.ts             # nodemailer 이메일 발송
+│   │   ├── renderer.ts           # HTML 이메일 렌더러 (크로스 디바이스 세션 머지 포함)
+│   │   ├── merge-sessions.ts     # 세션 머지 유틸리티 (동일 프로젝트+제목 세션 통합)
 │   │   └── template.ts           # Bright 컬러코딩 HTML 이메일 템플릿
 │   ├── scheduler/install.ts      # launchd/cron 자동 설치
 │   └── skill/SKILL.md            # Claude Code skill 정의
@@ -193,6 +195,16 @@ npx .                # 로컬 npx 테스트
                                     ┌─────────────────┼─────────────┐
                                     ▼                 ▼             ▼
                               이메일 발송     report --week    report --month
+                                    │
+                          ┌─────────┴─────────┐
+                          ▼                   ▼
+                    D1 pre-sync          D1 post-sync
+                  (내 데이터 push)      (이메일 로그 push)
+                          │
+                          ▼
+                 크로스 디바이스 머지
+               (다른 기기 세션 pull +
+                동일 제목 세션 통합)
 ```
 
 ### 한국어 우선

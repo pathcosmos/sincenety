@@ -10,6 +10,8 @@ import { runCircle } from "./circle.js";
 import { getWeekBoundary } from "./circle.js";
 import { renderDailyEmail, type RenderedEmail } from "../email/renderer.js";
 import { sendEmail } from "../email/provider.js";
+import type { SessionData } from "../email/template.js";
+import type { D1Client } from "../cloud/d1-client.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -176,6 +178,26 @@ export async function runOut(
 
   const today = options?.date ? parseDateArg(options.date) : new Date();
 
+  // 1.1. D1 pre-sync (내 데이터 먼저 올려서 다른 기기가 참조 가능하게)
+  let d1Client: D1Client | null = null;
+  let machineId = "";
+  if (!options?.preview && !options?.renderOnly) {
+    try {
+      const { loadD1Client, pushToD1, getAutoMachineId } = await import("../cloud/sync.js");
+      const { ensureD1Schema } = await import("../cloud/d1-schema.js");
+      d1Client = await loadD1Client(storage);
+      if (d1Client) {
+        machineId = await getAutoMachineId(storage);
+        await ensureD1Schema(d1Client);
+        await pushToD1(storage, d1Client, machineId);
+        console.error("  ☁️  D1 sync complete");
+      }
+    } catch (err) {
+      console.warn(`  ⚠️  D1 pre-sync failed: ${err instanceof Error ? err.message : String(err)}`);
+      d1Client = null;
+    }
+  }
+
   // 1.5. 휴가일 체크 — force가 아니면 스킵
   if (!options?.force) {
     const { isVacationDay } = await import("../vacation/manager.js");
@@ -204,9 +226,73 @@ export async function runOut(
     const reportType = type as "daily" | "weekly" | "monthly";
     const dateKey = getReportDateKey(reportType, today);
 
+    // 3.1. 크로스 디바이스: 다른 기기가 이미 발송했으면 skip
+    if (d1Client && !options?.renderOnly && !options?.preview) {
+      try {
+        const { checkCrossDeviceEmailSent } = await import("../cloud/sync.js");
+        const alreadySent = await checkCrossDeviceEmailSent(d1Client, dateKey, reportType);
+        if (alreadySent) {
+          console.error(`  ⏭️  ${reportType} ${dateKey}: already sent by another device`);
+          result.skipped++;
+          result.entries.push({ type: reportType, dateKey, status: "skipped" });
+          continue;
+        }
+      } catch {
+        // D1 체크 실패 시 로컬 전용 동작
+      }
+    }
+
+    // 3.2. 크로스 디바이스: 다른 기기의 세션 데이터 수집
+    let crossDeviceSessions: SessionData[] | undefined;
+    if (d1Client && machineId) {
+      try {
+        const { pullCrossDeviceReports } = await import("../cloud/sync.js");
+        const remoteReports = await pullCrossDeviceReports(d1Client, machineId, dateKey, reportType);
+        if (remoteReports.length > 0) {
+          crossDeviceSessions = [];
+          for (const remote of remoteReports) {
+            try {
+              const remoteSessions = JSON.parse(remote.summaryJson || "[]");
+              for (const rs of remoteSessions) {
+                crossDeviceSessions.push({
+                  sessionId: rs.sessionId ?? "",
+                  projectName: rs.projectName ?? rs.project ?? "",
+                  startedAt: rs.startedAt ?? 0,
+                  endedAt: rs.endedAt ?? 0,
+                  durationMinutes: rs.durationMinutes ?? 0,
+                  messageCount: rs.messageCount ?? 0,
+                  userMessageCount: rs.userMessageCount ?? 0,
+                  assistantMessageCount: rs.assistantMessageCount ?? 0,
+                  inputTokens: rs.inputTokens ?? 0,
+                  outputTokens: rs.outputTokens ?? 0,
+                  totalTokens: rs.totalTokens ?? 0,
+                  title: rs.topic ?? rs.title ?? "",
+                  summary: rs.topic ?? rs.title ?? "",
+                  description: rs.outcome ?? rs.description ?? "",
+                  model: rs.model ?? "",
+                  category: rs.category ?? "",
+                  actions: [],
+                  wrapUp: rs.outcome
+                    ? { outcome: rs.outcome, significance: rs.significance ?? "", flow: rs.flow, nextSteps: rs.nextSteps }
+                    : undefined,
+                });
+              }
+            } catch {
+              // 개별 리모트 파싱 실패 무시
+            }
+          }
+          if (crossDeviceSessions.length > 0) {
+            console.error(`  🔗 ${crossDeviceSessions.length} sessions merged from other devices`);
+          }
+        }
+      } catch {
+        // 크로스 디바이스 pull 실패 시 로컬 전용
+      }
+    }
+
     let rendered: RenderedEmail | null;
     try {
-      rendered = await renderDailyEmail(storage, dateKey, reportType);
+      rendered = await renderDailyEmail(storage, dateKey, reportType, crossDeviceSessions);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       result.errors++;
@@ -264,21 +350,14 @@ export async function runOut(
     process.stdout.write(JSON.stringify(output, null, 2) + "\n");
   }
 
-  // D1 auto-sync (non-fatal)
-  if (!options?.preview && !options?.renderOnly) {
+  // D1 post-sync: 이메일 발송 로그 push (pre-sync에서 이미 데이터는 올라감)
+  if (!options?.preview && !options?.renderOnly && d1Client && machineId && result.sent > 0) {
     try {
-      const { loadD1Client, pushToD1 } = await import("../cloud/sync.js");
-      const { ensureD1Schema } = await import("../cloud/d1-schema.js");
-      const { hostname } = await import("node:os");
-      const client = await loadD1Client(storage);
-      if (client) {
-        const machineId = await storage.getConfig("machine_id") ?? hostname();
-        await ensureD1Schema(client);
-        await pushToD1(storage, client, machineId);
-        console.error("  ☁️  D1 sync complete");
-      }
+      const { pushToD1 } = await import("../cloud/sync.js");
+      await pushToD1(storage, d1Client, machineId);
+      console.error("  ☁️  D1 sync complete");
     } catch (err) {
-      console.warn(`  ⚠️  D1 sync failed: ${err instanceof Error ? err.message : String(err)}`);
+      console.warn(`  ⚠️  D1 post-sync failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 

@@ -197,6 +197,16 @@ Cloudflare D1을 통한 멀티머신 데이터 통합:
 - **머신 ID**: 하드웨어 기반 자동 감지 (아래 참조), `config --machine-name`으로 커스텀 식별
 - **의존성 무추가**: D1 REST API는 native `fetch` 사용 -- 새 패키지 없음
 
+### 크로스 디바이스 통합 리포트
+
+**v0.8.0** — 여러 기기(예: Mac + Linux)에서 작업하면 모든 기기의 세션이 자동으로 하나의 일일보고로 합쳐집니다:
+
+- **Push-before-pull**: 내 데이터를 D1에 먼저 올린 후, 다른 기기의 세션을 가져와 통합
+- **이메일 중복 방지**: 발송 전 D1에서 다른 기기가 이미 발송했는지 확인 — 기기별 중복 이메일 방지
+- **세션 제목 머지**: 같은 `프로젝트명 + 제목`의 세션을 자동 머지 — 통계 합산, 가장 상세한 wrapUp 채택, flow 서술 연결
+- **Graceful fallback**: D1 연결 불가 시 기존 단일 기기 동작으로 자연스럽게 전환
+- **타이틀 추출 개선**: 슬래시 명령(/sincenety 등)으로 시작하는 세션에 의미 있는 폴백 제목 부여
+
 ### Cloudflare API Token 발급 방법
 
 1. **토큰 생성 페이지 접속**: [https://dash.cloudflare.com/profile/api-tokens](https://dash.cloudflare.com/profile/api-tokens)
@@ -541,7 +551,8 @@ sincenety/
 │   │   └── markdown.ts         # 마크다운 리포트 생성
 │   ├── email/
 │   │   ├── sender.ts           # nodemailer 이메일 발송
-│   │   ├── renderer.ts         # HTML 이메일 렌더러 (보고서 → HTML)
+│   │   ├── renderer.ts         # HTML 이메일 렌더러 (보고서 → HTML, 크로스 디바이스 머지)
+│   │   ├── merge-sessions.ts   # 세션 머지 유틸리티 (동일 제목 세션 통합)
 │   │   ├── resend.ts           # Resend API 이메일 provider
 │   │   ├── provider.ts         # 이메일 provider 추상화 (Gmail MCP/Resend/SMTP)
 │   │   └── template.ts         # Bright 컬러코딩 HTML 이메일 템플릿
@@ -656,20 +667,28 @@ $ sincenety [--token T --key K --email E]
 │  └───────────────────────────────────────────┘    │
 │                 │                                 │
 │                 ▼                                 │
+│  ┌─ D1 pre-sync ────────────────────────────┐     │
+│  │ 로컬 → D1 push (내 데이터 먼저)          │     │
+│  └──────────────────────────────────────────┘     │
+│                 │                                 │
+│                 ▼                                 │
 │  ┌─ out (스마트 발신) ───────────────────────┐    │
 │  │ daily  — 항상 발송                        │    │
 │  │ weekly — 금요일 (또는 캐치업)             │    │
 │  │ monthly — 월말 (또는 캐치업)              │    │
 │  │ --date yyyyMMdd — 특정 날짜 지정          │    │
 │  │                                           │    │
+│  │ D1 이메일 중복 체크 (이미 발송 시 스킵)   │    │
+│  │ D1 크로스 디바이스 세션 pull + 머지        │    │
+│  │ 동일 제목 세션 머지 (×N)                  │    │
+│  │                                           │    │
 │  │ → Gmail MCP / Resend /                    │    │
 │  │   Gmail SMTP / Custom SMTP                │    │
 │  └───────────────────────────────────────────┘    │
 │                 │                                 │
 │                 ▼                                 │
-│  ┌─ sync (자동) ────────────────────────────┐     │
-│  │ 로컬 → Cloudflare D1 push               │     │
-│  │ (멀티머신 통합)                          │     │
+│  ┌─ D1 post-sync ───────────────────────────┐     │
+│  │ 이메일 발송 로그 → D1 push               │     │
 │  └──────────────────────────────────────────┘     │
 │                                                   │
 └───────────────────────────────────────────────────┘
@@ -886,6 +905,16 @@ CLI를 7개 명령에서 3단계 파이프라인으로 전면 재구성:
 - **`src/util/machine-id.ts`**: 크로스플랫폼 하드웨어 ID 감지
 - **테스트 116개**: 기존 108 + cf-ai/machine-id 8개 추가
 
+### v0.8.0 (2026-04-09) — 크로스 디바이스 통합 리포트 + 세션 머지
+
+- **크로스 디바이스 통합 리포트**: 여러 기기에서 작업 시 `out` 실행 시 로컬 데이터를 D1에 먼저 push(pre-sync)한 후 다른 기기의 세션을 pull하여 하나의 통합 이메일 리포트로 발송
+- **기기 간 이메일 중복 방지**: 발송 전 D1 `email_logs`에서 다른 기기가 이미 해당 날짜+유형의 리포트를 발송했는지 확인 — 기기별 중복 이메일 방지
+- **세션 제목 머지**: 같은 날짜 내에서 `프로젝트명 + 정규화된 제목`이 동일한 세션을 자동 머지 — 통계(메시지, 토큰, 시간) 합산, 가장 상세한 wrapUp 채택, flow 서술을 `→` 구분자로 연결. 머지된 세션은 제목에 `(×N)` 카운트 표시
+- **타이틀 추출 개선**: 슬래시 명령(/sincenety 등)으로 시작하는 세션에서 5자 이상의 의미 있는 메시지를 우선 선택; 없으면 `[프로젝트명] session`으로 폴백 (빈 제목 방지)
+- **Graceful D1 fallback**: 모든 크로스 디바이스 기능이 try/catch로 감싸져 있어 D1 연결 불가 시 기존 단일 기기 동작으로 자연스럽게 전환
+- **신규 파일**: `src/email/merge-sessions.ts` (세션 머지 유틸리티), `src/cloud/sync.ts` 추가 (`pullCrossDeviceReports`, `checkCrossDeviceEmailSent`)
+- **테스트**: 128/128 통과 (11개 테스트 파일)
+
 ### v0.7.7 (2026-04-09) — claude-code 요약 품질 개선 + Workers AI CLI 샘플 리포트
 
 - **claude-code 요약 품질 개선**: `ai_provider = claude-code`일 때 `circle --json`이 `conversationTurns`를 출력 전 전처리 — 경로/파일명 제거, 단답 필터링, 30턴 제한, 200/300자 트렁케이션 적용 (Workers AI와 동일한 전처리). Claude Code의 직접 요약 품질 대폭 향상
@@ -961,6 +990,9 @@ CLI를 7개 명령에서 3단계 파이프라인으로 전면 재구성:
 - [x] 방어적 sessionId 매칭 (prefix 폴백 + 자동 교정)
 - [x] claude-code 요약 품질 개선 (턴 전처리 + SKILL.md 2-pass)
 - [x] Workers AI CLI 샘플 리포트 (GitHub Pages)
+- [x] 크로스 디바이스 통합 리포트 (D1 pull + 이메일 중복 방지)
+- [x] 세션 제목 머지 (동일 제목 통합, ×N 카운트)
+- [x] 타이틀 추출 개선 (의미 있는 메시지 우선 + 폴백)
 - [ ] passphrase 설정 기능 완성
 - [ ] 다국어 보고서 출력 (KO 토글 옵션)
 - [ ] 보고서 내보내기 (PDF/HTML standalone)
