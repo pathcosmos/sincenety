@@ -80,6 +80,105 @@ export interface CircleSaveInput {
 }
 
 // ---------------------------------------------------------------------------
+// mergeSummariesByTitle — 동일 프로젝트+제목 세션 통합 요약
+// ---------------------------------------------------------------------------
+
+/** 제목 정규화: 소문자, 공백 정리, 프로젝트명 접미사/슬래시 커맨드 제거 */
+function normalizeTitle(title: string, projectName: string): string {
+  let t = title.toLowerCase().trim();
+  const pn = projectName.toLowerCase();
+  if (pn && t.endsWith(pn)) {
+    t = t.slice(0, -pn.length).trim();
+  }
+  t = t.replace(/^\/\S+\s*/, "").trim();
+  t = t.replace(/\s+/g, " ");
+  return t;
+}
+
+export interface MergedSummary extends CircleSaveSessionInput {
+  messageCount?: number;
+  totalTokens?: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  durationMinutes?: number;
+  model?: string;
+  mergedCount?: number;
+}
+
+/**
+ * 동일 프로젝트+제목 세션을 머지하여 중복 요약을 통합한다.
+ * - projectName + normalizedTitle 기준 그룹핑
+ * - 2+ 그룹: 통계 합산, flow " → " 연결, significance 최장 채택
+ * - 제목에 "(×N)" 표시
+ */
+export function mergeSummariesByTitle(sessions: MergedSummary[]): MergedSummary[] {
+  if (sessions.length <= 1) return sessions;
+
+  const groups = new Map<string, MergedSummary[]>();
+  for (const s of sessions) {
+    const key = `${s.projectName ?? ""}::${normalizeTitle(s.topic ?? "", s.projectName ?? "")}`;
+    const group = groups.get(key);
+    if (group) {
+      group.push(s);
+    } else {
+      groups.set(key, [s]);
+    }
+  }
+
+  const merged: MergedSummary[] = [];
+
+  for (const group of groups.values()) {
+    if (group.length === 1) {
+      merged.push(group[0]);
+      continue;
+    }
+
+    const first = group[0];
+    const last = group[group.length - 1];
+    const n = group.length;
+
+    // flow: 각 세션의 flow를 " → "로 연결
+    const flows = group
+      .map((s) => s.flow)
+      .filter((f): f is string => !!f && f.length > 0);
+
+    // significance: 가장 긴 것 채택
+    let longestSig = "";
+    for (const s of group) {
+      if ((s.significance?.length ?? 0) > longestSig.length) {
+        longestSig = s.significance ?? "";
+      }
+    }
+
+    // outcome: 줄바꿈으로 연결
+    const outcomes = group
+      .map((s) => s.outcome)
+      .filter((o): o is string => !!o && o.length > 0);
+
+    const m: MergedSummary = {
+      sessionId: first.sessionId,
+      projectName: first.projectName,
+      topic: `${first.topic} (×${n})`,
+      outcome: outcomes.join("\n"),
+      flow: flows.join(" → "),
+      significance: longestSig,
+      nextSteps: last.nextSteps,
+      messageCount: group.reduce((sum, s) => sum + (s.messageCount ?? 0), 0),
+      totalTokens: group.reduce((sum, s) => sum + (s.totalTokens ?? 0), 0),
+      inputTokens: group.reduce((sum, s) => sum + (s.inputTokens ?? 0), 0),
+      outputTokens: group.reduce((sum, s) => sum + (s.outputTokens ?? 0), 0),
+      durationMinutes: group.reduce((sum, s) => sum + (s.durationMinutes ?? 0), 0),
+      model: first.model,
+      mergedCount: n,
+    };
+
+    merged.push(m);
+  }
+
+  return merged;
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
