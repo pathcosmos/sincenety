@@ -750,6 +750,7 @@ node dist/cli.js     # Direct execution
 - [x] AI provider setup required on first run in Claude Code
 - [x] Scope selection: global (all projects) or project (specific path) mode
 - [x] Postinstall setup wizard: `npm install -g` triggers interactive 3-step setup
+- [x] Date-targeted reports: `--date yyyyMMdd` for out/outd/outw/outm commands
 - [ ] Passphrase encryption option
 - [ ] Similar task matching (TF-IDF)
 - [ ] External DB connectors (MariaDB/PostgreSQL)

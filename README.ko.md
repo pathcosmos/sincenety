@@ -803,6 +803,7 @@ npx .                # 현재 디렉토리를 npx로 실행
 - **HTML 이메일 템플릿**: Bright 컬러코딩 대시보드
 - **범위 선택**: Global (전체) / Project (특정 프로젝트) 모드
 - **postinstall 셋업 위저드**: `npm install -g` 시 대화형 3단계 설정
+- **날짜 지정 보고서**: `--date yyyyMMdd`로 out/outd/outw/outm 특정 날짜 발송
 
 ### v0.2.1 (2026-04-07) — 이메일 AI 요약 통합
 
@@ -882,6 +883,13 @@ CLI를 7개 명령에서 3단계 파이프라인으로 전면 재구성:
 - **`src/cloud/d1-auto-setup.ts`**: Token-only 자동 설정
 - **`src/util/machine-id.ts`**: 크로스플랫폼 하드웨어 ID 감지
 - **테스트 116개**: 기존 108 + cf-ai/machine-id 8개 추가
+
+### v0.7.2 (2026-04-09) — --date 옵션 + Data Flow 다이어그램 분리
+
+- **`--date yyyyMMdd` 옵션**: `out/outd/outw/outm` 명령에 특정 날짜 지정 가능
+- **Data Flow 다이어그램 분리**: Install Flow (설치 흐름) + Run Flow (실행 흐름) 2개로 분리
+- **`parseDateArg()` 헬퍼**: yyyyMMdd 파싱 + 유효성 검증 (2월30일, 13월 등 차단)
+- **테스트 12개 추가** (128/128 pass)
 
 ### v0.7.0 (2026-04-09) — Scope 선택 + postinstall 셋업 위저드
 
