@@ -731,11 +731,16 @@ node dist/cli.js     # Direct execution
 
 ## Changelog
 
-### v0.7.4 (2026-04-09) — AI provider routing bug fix
+### v0.7.4 (2026-04-09) — AI provider routing fix + summarization quality improvements
 
 - **Fixed `autoSummarize()` ignoring `ai_provider` config**: In CLI environment (`sincenety`, `sincenety circle`), Workers AI was called whenever D1 tokens existed, regardless of `ai_provider` setting. Now uses `resolveAiProvider()` to respect the config
 - **Added provider check to `circleJson --summarize`**: `--summarize` flag now only calls Workers AI when `ai_provider = cloudflare`
 - **Heuristic fallback on Workers AI failure**: When Workers AI fails for individual sessions, falls back to `summarizer.ts` heuristic summary (prevents data loss)
+- **`autoSummarize()` now runs for all AI providers**: Previously only ran for `cloudflare`; now runs for all providers (cloudflare → Workers AI, anthropic → Claude API, claude-code/heuristic → heuristic), ensuring `daily_reports` always has baseline summaries
+- **Assistant output truncation raised from 300 to 1500 chars**: Previously assistant responses were hard-capped at 300 characters, losing most content needed for quality summaries
+- **File path/filename filtering in text cleanup**: Absolute paths (`/Users/...`, `/Volumes/...`), relative paths (`./foo`, `../bar`), and filenames with common extensions (`.ts`, `.js`, `.json`, etc.) are now stripped from summary input to reduce technical noise
+- **Improved heuristic fallback summaries**: When no conversation turns exist, shows project name + message count instead of raw user input; when no result keywords found, extracts first sentence from assistant output instead of raw user input
+- **`tool_use` block extraction**: Claude Code assistant responses are often `tool_use` blocks (Edit, Bash, Read) with no text content; now extracts tool names as `[Edit, Bash, Read]` to give the heuristic summarizer meaningful input
 - **Updated README AI Summarization section**: Corrected "CLI always uses Workers AI" → "`ai_provider` respected in all environments"
 
 ---

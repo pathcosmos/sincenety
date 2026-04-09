@@ -886,11 +886,16 @@ CLI를 7개 명령에서 3단계 파이프라인으로 전면 재구성:
 - **`src/util/machine-id.ts`**: 크로스플랫폼 하드웨어 ID 감지
 - **테스트 116개**: 기존 108 + cf-ai/machine-id 8개 추가
 
-### v0.7.4 (2026-04-09) — AI provider 라우팅 버그 수정
+### v0.7.4 (2026-04-09) — AI provider 라우팅 수정 + 요약 품질 개선
 
 - **`autoSummarize()` ai_provider 미존중 버그 수정**: CLI 환경(`sincenety`, `sincenety circle`)에서 `ai_provider` 설정과 무관하게 D1 토큰만 있으면 Workers AI를 호출하던 버그 수정. 이제 `resolveAiProvider()`를 통해 `ai_provider` 설정을 존중
 - **`circleJson --summarize` provider 체크 추가**: `--summarize` 플래그도 `ai_provider = cloudflare`일 때만 Workers AI 호출
 - **Workers AI 실패 시 heuristic fallback**: 개별 세션에서 Workers AI가 실패하면 `summarizer.ts`의 heuristic 요약으로 대체 (데이터 손실 방지)
+- **`autoSummarize()` 전 AI provider 대응**: 기존에는 `cloudflare`일 때만 실행되던 것을 모든 provider에서 실행 (cloudflare → Workers AI, anthropic → Claude API, claude-code/heuristic → 휴리스틱). `daily_reports`에 항상 기본 요약이 생성됨
+- **어시스턴트 출력 캡 300 → 1500자로 확대**: 기존 300자 하드캡으로 대부분의 응답 내용이 유실되던 문제 수정. 1500자로 확대하여 요약 품질 향상
+- **파일 경로/파일명 필터링**: 절대 경로(`/Users/...`, `/Volumes/...`), 상대 경로(`./foo`, `../bar`), 확장자 포함 파일명(`.ts`, `.js`, `.json` 등)을 요약 입력에서 제거하여 기술적 노이즈 감소
+- **휴리스틱 fallback 요약 개선**: 대화 턴이 없을 때 사용자 입력 원문 대신 프로젝트명 + 메시지 수 표시; 결과 키워드 미발견 시 어시스턴트 출력의 첫 문장 추출로 대체
+- **`tool_use` 블록 추출**: Claude Code 어시스턴트 응답이 텍스트 없는 `tool_use` 블록(Edit, Bash, Read)인 경우 도구명을 `[Edit, Bash, Read]` 형태로 추출하여 휴리스틱 요약에 활용
 - **README AI 요약 엔진 섹션 갱신**: "CLI에서는 항상 Workers AI" → "모든 환경에서 `ai_provider` 존중"으로 정정
 
 ### v0.7.2 (2026-04-09) — --date 옵션 + Data Flow 다이어그램 분리

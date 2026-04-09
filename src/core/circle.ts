@@ -281,25 +281,33 @@ export async function circleSave(
 }
 
 /**
- * Cloudflare Workers AI로 변경된 날짜의 세션을 자동 요약.
- * ai_provider가 "cloudflare"일 때만 동작 (d1 토큰 존재만으로 시도하지 않음).
+ * 변경된 날짜의 세션을 자동 요약.
+ * 모든 ai_provider에서 동작 — cloudflare는 Workers AI, 그 외는 heuristic/API.
+ * claude-code 모드에서도 heuristic 요약을 baseline으로 저장하여
+ * SKILL.md circle --save로 Claude Code가 덮어쓰기 전까지 최소한의 요약을 보장.
  */
 export async function autoSummarize(
   storage: StorageAdapter,
   changedDates: string[],
 ): Promise<number> {
-  // ai_provider 설정을 존중하여 cloudflare일 때만 Workers AI 사용
   const { resolveAiProvider, loadAiProviderConfig } = await import("./ai-provider.js");
+  const { summarizeSession: summarize } = await import("./summarizer.js");
   const provider = await resolveAiProvider(storage);
-  if (provider !== "cloudflare") return 0;
 
-  const aiConfig = await loadAiProviderConfig(storage);
-  const accountId = aiConfig.accountId;
-  const apiToken = aiConfig.apiToken;
-  if (!accountId || !apiToken) return 0;
+  // Cloudflare Workers AI 설정 (cloudflare일 때만)
+  let cfConfig: CfAiConfig | null = null;
+  let cfSummarize: typeof import("../cloud/cf-ai.js").summarizeSession | null = null;
+  let cfOverview: typeof import("../cloud/cf-ai.js").generateOverview | null = null;
+  if (provider === "cloudflare") {
+    const aiConfig = await loadAiProviderConfig(storage);
+    if (aiConfig.accountId && aiConfig.apiToken) {
+      const cfAi = await import("../cloud/cf-ai.js");
+      cfConfig = { accountId: aiConfig.accountId, apiToken: aiConfig.apiToken };
+      cfSummarize = cfAi.summarizeSession;
+      cfOverview = cfAi.generateOverview;
+    }
+  }
 
-  const { summarizeSession, generateOverview } = await import("../cloud/cf-ai.js");
-  const config: CfAiConfig = { accountId, apiToken };
   let summarized = 0;
 
   for (const date of changedDates) {
@@ -324,31 +332,40 @@ export async function autoSummarize(
 
       for (const s of sessions) {
         const turns = s.conversationTurns ?? [];
-        if (turns.length === 0) continue;
 
-        const summary = await summarizeSession(config, s.projectName ?? "", turns);
-        if (summary) {
-          summaries.push({
-            sessionId: s.sessionId,
-            projectName: s.projectName,
-            ...summary,
-          });
-        } else {
-          // Workers AI 실패 시 heuristic fallback
-          const { summarizeSession: heuristicSummarize } = await import("./summarizer.js");
-          const fallback = await heuristicSummarize(
-            { ...s, conversationTurns: turns } as any,
-          );
-          summaries.push({
-            sessionId: s.sessionId,
-            projectName: s.projectName ?? "",
-            ...fallback,
-          });
+        if (cfConfig && cfSummarize && turns.length > 0) {
+          // Cloudflare Workers AI 경로
+          const summary = await cfSummarize(cfConfig, s.projectName ?? "", turns);
+          if (summary) {
+            summaries.push({ sessionId: s.sessionId, projectName: s.projectName, ...summary });
+            continue;
+          }
         }
+
+        // 전 provider 공통: summarizer.ts 경유 (anthropic API 또는 heuristic)
+        const fallback = await summarize(
+          { ...s, conversationTurns: turns } as any,
+          storage,
+        );
+        summaries.push({
+          sessionId: s.sessionId,
+          projectName: s.projectName ?? "",
+          ...fallback,
+        });
       }
 
       if (summaries.length > 0) {
-        const overview = await generateOverview(config, date, summaries);
+        let overview: string | null = null;
+        if (cfConfig && cfOverview) {
+          overview = await cfOverview(cfConfig, date, summaries);
+        } else {
+          // heuristic overview: 세션 topic 요약
+          const topics = summaries.map((s) => s.topic).filter(Boolean);
+          overview = topics.length > 0
+            ? `${date} 작업: ${topics.join(", ")}`
+            : null;
+        }
+
         await circleSave(storage, {
           date,
           type: "daily",
@@ -356,11 +373,11 @@ export async function autoSummarize(
           sessions: summaries,
         });
         summarized++;
-        const aiCount = summaries.filter((s) => s.topic).length;
-        console.log(`  🤖 ${date} AI summary done (${summaries.length} sessions, Cloudflare AI)`);
+        const providerLabel = cfConfig ? "Cloudflare AI" : provider;
+        console.log(`  🤖 ${date} summary done (${summaries.length} sessions, ${providerLabel})`);
       }
     } catch (err) {
-      console.warn(`  ⚠️ ${date} AI summary failed: ${err instanceof Error ? err.message : String(err)}`);
+      console.warn(`  ⚠️ ${date} summary failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -382,7 +399,7 @@ export async function runCircle(
   if (!options?.json && !options?.save && !options?.skipAutoSummarize) {
     const summarized = await autoSummarize(storage, airResult.changedDates);
     if (summarized > 0) {
-      console.log(`  🤖 Cloudflare AI: ${summarized} day(s) summarized`);
+      console.log(`  🤖 ${summarized} day(s) summarized`);
     }
   }
 

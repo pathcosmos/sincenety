@@ -27,12 +27,15 @@ interface Turn {
   timestamp: number;
 }
 
-/** XML/시스템 태그 제거 */
+/** XML/시스템 태그/파일 경로 제거 */
 function clean(text: string): string {
   return text
     .replace(/<[^>]*>/g, "")
     .replace(/Caveat:.*?(?=[\n|]|$)/gi, "")
     .replace(/Base directory for this skill:.*?(?=[\n|]|$)/gi, "")
+    .replace(/(?:\/(?:Users|Volumes|home|tmp|var|opt|etc|usr)\/)\S+/g, "")  // 절대 경로
+    .replace(/(?:\.\.?\/)\S+/g, "")              // 상대 경로
+    .replace(/\b[\w.-]+\.(?:ts|js|tsx|jsx|json|jsonl|md|yaml|yml|toml|css|html|sql|sh|py|go|rs)\b/g, "")  // 파일명
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -149,7 +152,7 @@ function summarizeHeuristic(
   if (turns.length === 0) {
     return {
       topic: session.projectName,
-      outcome: clean(session.title ?? session.summary),
+      outcome: `${session.projectName} 작업 세션 (${session.messageCount ?? 0}개 메시지)`,
       flow: "",
       significance: "",
     };
@@ -178,9 +181,12 @@ function summarizeHeuristic(
       }
     }
 
-    // 결과 키워드가 없으면 입력에서 작업 의도 추출
-    if (workItems.length === 0 && input.length > 15) {
-      workItems.push(trunc(input, 60));
+    // 결과 키워드가 없으면 어시스턴트 응답 첫 문장에서 추출
+    if (workItems.length === 0 && output.length > 20) {
+      const firstSentence = output.match(/^[^.!?]+[.!?]/)?.[0];
+      if (firstSentence) {
+        workItems.push(trunc(firstSentence.trim(), 80));
+      }
     }
   }
 

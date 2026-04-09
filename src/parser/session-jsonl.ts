@@ -84,16 +84,20 @@ function findProjectDir(project: string, sessionId: string): string | null {
 function extractTextContent(content: unknown): string {
   if (typeof content === "string") return content;
   if (Array.isArray(content)) {
-    return content
-      .filter(
-        (block): block is { type: string; text: string } =>
-          typeof block === "object" &&
-          block !== null &&
-          "text" in block &&
-          typeof (block as Record<string, unknown>).text === "string",
-      )
-      .map((block) => block.text)
-      .join("\n");
+    const textParts: string[] = [];
+    const toolNames: string[] = [];
+    for (const block of content) {
+      if (typeof block !== "object" || block === null) continue;
+      const b = block as Record<string, unknown>;
+      if (b.type === "text" && typeof b.text === "string") {
+        textParts.push(b.text);
+      } else if (b.type === "tool_use" && typeof b.name === "string") {
+        toolNames.push(b.name as string);
+      }
+    }
+    // 텍스트가 있으면 텍스트 우선, 없으면 tool 이름이라도 반환
+    if (textParts.length > 0) return textParts.join("\n");
+    if (toolNames.length > 0) return `[${toolNames.join(", ")}]`;
   }
   return "";
 }
@@ -107,12 +111,15 @@ function isSlashCommand(text: string): boolean {
   return cleaned.startsWith("/");
 }
 
-/** XML/HTML 태그, 시스템 메시지, 슬래시 커맨드 프리픽스 등을 정리 */
+/** XML/HTML 태그, 시스템 메시지, 파일 경로 등을 정리 */
 function cleanText(text: string): string {
   return text
     .replace(/<[^>]*>/g, "")                     // XML/HTML 태그 제거
     .replace(/Caveat:.*?(?=\n|$)/gi, "")         // Caveat 시스템 메시지 제거
     .replace(/Base directory for this skill:.*?(?=\n|$)/gi, "")
+    .replace(/(?:\/(?:Users|Volumes|home|tmp|var|opt|etc|usr)\/)\S+/g, "")  // 절대 경로 제거
+    .replace(/(?:\.\.?\/)\S+/g, "")              // 상대 경로 (./foo, ../bar) 제거
+    .replace(/\b[\w.-]+\.(?:ts|js|tsx|jsx|json|jsonl|md|yaml|yml|toml|css|html|sql|sh|py|go|rs)\b/g, "")  // 파일명 제거
     .replace(/\s+/g, " ")                        // 연속 공백/줄바꿈 → 단일 공백
     .trim();
 }
@@ -239,9 +246,9 @@ export async function parseSessionJsonl(
         models.push(entry.message.model);
       }
 
-      // 어시스턴트 응답 텍스트 수집 (첫 300자만 — 메모리 절약)
+      // 어시스턴트 응답 텍스트 수집 (첫 1500자 — 요약 품질 확보)
       const assistText = extractTextContent(entry.message.content);
-      const assistSummary = assistText.length > 300 ? assistText.slice(0, 300) : assistText;
+      const assistSummary = assistText.length > 1500 ? assistText.slice(0, 1500) : assistText;
 
       // 대화 턴 완성
       if (pendingUserInput) {
