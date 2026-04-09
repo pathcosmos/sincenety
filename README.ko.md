@@ -1,6 +1,6 @@
 # sincenety
 
-> **[English Documentation (README.md)](./README.md)** | **[샘플 리포트](https://pathcosmos.github.io/sincenety/sample-report.html)**
+> **[English Documentation (README.md)](./README.md)** | **[샘플 리포트](https://pathcosmos.github.io/sincenety/sample-report.html)** | **[CLI 리포트 (Workers AI)](https://pathcosmos.github.io/sincenety/sample-report-cli.html)**
 
 **Claude Code 작업 갈무리 도구** — 3단계 파이프라인으로 Claude Code 작업 이력을 자동 수집, 요약, 보고합니다.
 
@@ -886,6 +886,13 @@ CLI를 7개 명령에서 3단계 파이프라인으로 전면 재구성:
 - **`src/util/machine-id.ts`**: 크로스플랫폼 하드웨어 ID 감지
 - **테스트 116개**: 기존 108 + cf-ai/machine-id 8개 추가
 
+### v0.7.7 (2026-04-09) — claude-code 요약 품질 개선 + Workers AI CLI 샘플 리포트
+
+- **claude-code 요약 품질 개선**: `ai_provider = claude-code`일 때 `circle --json`이 `conversationTurns`를 출력 전 전처리 — 경로/파일명 제거, 단답 필터링, 30턴 제한, 200/300자 트렁케이션 적용 (Workers AI와 동일한 전처리). Claude Code의 직접 요약 품질 대폭 향상
+- **SKILL.md 2-pass 구조화**: 2단계 지시문 전면 개편 — 세션별 1-pass 분리 처리 + overview 2-pass 종합 생성. 구체적 입출력 예시 추가로 일관된 품질 보장
+- **Workers AI CLI 샘플 리포트**: `docs/sample-report-cli.html` — Workers AI(Cloudflare)가 요약한 실제 일일보고 이메일 HTML 추가. [pathcosmos.github.io/sincenety/sample-report-cli.html](https://pathcosmos.github.io/sincenety/sample-report-cli.html)에서 확인 가능
+- **테스트**: 128/128 통과 (11개 테스트 파일)
+
 ### v0.7.6 (2026-04-09) — sessionId prefix 매칭 + GitHub Pages 샘플 리포트
 
 - **sessionId prefix 매칭 폴백**: `circle --save`로 AI 요약 저장 시 sessionId가 잘리거나 변형되어도 렌더러(`renderer.ts`)가 prefix(12자) 매칭으로 올바른 세션에 AI 요약을 매핑 — 이메일에서 raw 데이터로 폴백되는 문제 방지
@@ -952,6 +959,8 @@ CLI를 7개 명령에서 3단계 파이프라인으로 전면 재구성:
 - [x] 날짜 지정 보고서: `--date yyyyMMdd`로 out/outd/outw/outm 특정 날짜 발송
 - [x] 샘플 리포트 페이지 (GitHub Pages: [pathcosmos.github.io/sincenety](https://pathcosmos.github.io/sincenety/))
 - [x] 방어적 sessionId 매칭 (prefix 폴백 + 자동 교정)
+- [x] claude-code 요약 품질 개선 (턴 전처리 + SKILL.md 2-pass)
+- [x] Workers AI CLI 샘플 리포트 (GitHub Pages)
 - [ ] passphrase 설정 기능 완성
 - [ ] 다국어 보고서 출력 (KO 토글 옵션)
 - [ ] 보고서 내보내기 (PDF/HTML standalone)
