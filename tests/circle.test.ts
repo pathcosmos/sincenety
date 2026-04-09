@@ -248,15 +248,14 @@ function makeSummary(overrides: Partial<MergedSummary> = {}): MergedSummary {
 }
 
 describe("mergeSummariesByTitle", () => {
-  it("returns sessions unchanged when no duplicates", () => {
+  it("merges sessions with same projectName even if topics differ", () => {
     const sessions: MergedSummary[] = [
       makeSummary({ sessionId: "s1", topic: "Login feature" }),
       makeSummary({ sessionId: "s2", topic: "Payment module" }),
     ];
     const result = mergeSummariesByTitle(sessions);
-    expect(result).toHaveLength(2);
-    expect(result[0].topic).toBe("Login feature");
-    expect(result[1].topic).toBe("Payment module");
+    expect(result).toHaveLength(1);
+    expect(result[0].topic).toContain("(×2)");
   });
 
   it("merges sessions with same projectName and topic", () => {

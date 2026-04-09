@@ -58,7 +58,7 @@ The pipeline can also be run in individual phases:
    - Auto-finalization: midnight finalizes previous day, Monday finalizes previous week, 1st finalizes previous month
    - Change detection: data hash comparison saves tokens
    - Vacation days get a [vacation] label automatically
-   - **Same-title session merge**: sessions with the same `projectName + normalizedTitle` are individually summarized, then consolidated into a single merged summary — eliminates duplicate entries and improves report coherence
+   - **Project-level session merge**: all sessions within the same `projectName` are individually summarized, then consolidated into a single merged summary per project — eliminates duplicate entries and improves report coherence
 
 3. **`sincenety out`** — Smart email delivery
    - `out`: daily always, +weekly on Friday, +monthly on month-end
@@ -556,7 +556,7 @@ sincenety/
 │   ├── email/
 │   │   ├── sender.ts           # nodemailer email sender
 │   │   ├── renderer.ts         # HTML email renderer (report → HTML, cross-device merge)
-│   │   ├── merge-sessions.ts   # Session merge by topic (dedup same-title sessions)
+│   │   ├── merge-sessions.ts   # Session merge by project (dedup same-project sessions)
 │   │   ├── resend.ts           # Resend API email provider
 │   │   ├── provider.ts         # Email provider abstraction (Gmail MCP/Resend/SMTP)
 │   │   └── template.ts         # Bright color-coded HTML email template
@@ -681,7 +681,7 @@ $ sincenety [--token T --key K --email E]
 │  │ --date yyyyMMdd — target specific date    │    │
 │  │                                           │    │
 │  │ D1 cross-device session pull + merge      │    │
-│  │ Same-title session merge (×N)             │    │
+│  │ Project-level session merge (×N)           │    │
 │  │                                           │    │
 │  │ → Gmail MCP / Resend /                    │    │
 │  │   Gmail SMTP / Custom SMTP                │    │
@@ -752,6 +752,15 @@ node dist/cli.js     # Direct execution
 
 ## Changelog
 
+### v0.8.3 (2026-04-09) — Project-level session consolidation
+
+- **Simplified session consolidation**: Changed merging logic from "same title within project" (`projectName::normalizedTitle`) to "all sessions per project" (`projectName` only). Final result = one entry per project, regardless of session titles
+- **circle.ts**: `mergeSummariesByTitle()` grouping key changed from `projectName::normalizedTitle` to `projectName`
+- **merge-sessions.ts**: `mergeSessionsByTopic()` grouping key changed from `projectName::normalizedTitle` to `projectName`
+- **SKILL.md updated (both copies)**: Removed the old 2-pass mergeGroup consolidation and 3-pass project consolidation. Replaced with a single 2-pass that groups by `projectName` directly
+- **`--summarize` path**: Also updated to perform the same project-level consolidation
+- **Tests**: Updated to expect same-project sessions to merge even with different topics
+
 ### v0.8.2 (2026-04-09) — Circle same-title session merge summaries
 
 - **Same-title session merge in circle**: When multiple sessions share the same `projectName + normalizedTitle` within a date, circle now merges their individual summaries into a single consolidated summary. Each session is summarized individually first, then sessions in the same group are re-summarized together — outcome fields are joined, flows are concatenated with `→`, the longest significance is kept, and nextSteps comes from the last session. Merged entries show `(×N)` in the topic
@@ -772,7 +781,7 @@ node dist/cli.js     # Direct execution
 ### v0.8.0 (2026-04-09) — Cross-device consolidated reports + session merge
 
 - **Cross-device consolidated reports**: When working on multiple machines, `out` now pushes local data to D1 first (pre-sync), then queries D1 for other devices' sessions. Sessions from all machines are merged into a single consolidated email report
-- **Session merge by topic**: Sessions with the same `projectName + normalizedTitle` within a date are automatically merged in email reports — stats (messages, tokens, duration) are aggregated, the most detailed wrapUp is selected, flow narratives are concatenated with `→` separator. Merged sessions show `(×N)` count in the title
+- **Session merge by project**: Sessions within the same `projectName` within a date are automatically merged in email reports — stats (messages, tokens, duration) are aggregated, the most detailed wrapUp is selected, flow narratives are concatenated with `→` separator. Merged sessions show `(×N)` count in the title
 - **Title extraction improvement**: Sessions starting with slash commands (e.g., `/sincenety`) now prefer meaningful messages (>5 chars) for titles; if none exist, falls back to `[projectName] session` instead of empty strings
 - **Graceful D1 fallback**: All cross-device features are wrapped in try/catch — if D1 is unreachable, falls back to single-device local-only behavior with no disruption
 - **New files**: `src/email/merge-sessions.ts` (session merge utility), `src/cloud/sync.ts` additions (`pullCrossDeviceReports`, `checkCrossDeviceEmailSent`)
@@ -830,7 +839,7 @@ node dist/cli.js     # Direct execution
 - [x] Scope selection: global (all projects) or project (specific path) mode
 - [x] Postinstall setup wizard: `npm install -g` triggers interactive 3-step setup
 - [x] Date-targeted reports: `--date yyyyMMdd` for out/outd/outw/outm commands
-- [x] Circle same-title session merge (individual summary → consolidated re-summary)
+- [x] Circle project-level session merge (individual summary → consolidated re-summary per project)
 - [ ] Passphrase encryption option
 - [ ] Similar task matching (TF-IDF)
 - [ ] External DB connectors (MariaDB/PostgreSQL)
@@ -841,7 +850,7 @@ node dist/cli.js     # Direct execution
 - [x] claude-code summarization quality (turn preprocessing + SKILL.md 2-pass)
 - [x] Workers AI CLI sample report (GitHub Pages)
 - [x] Cross-device consolidated reports (D1 pull + circle merge + always-send)
-- [x] Session merge by topic (same-title dedup with ×N count)
+- [x] Session merge by project (project-level dedup with ×N count)
 - [x] Improved title extraction (meaningful message priority + fallback)
 - [ ] Report export (PDF/HTML standalone)
 

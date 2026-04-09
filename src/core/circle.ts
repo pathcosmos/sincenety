@@ -106,8 +106,8 @@ export interface MergedSummary extends CircleSaveSessionInput {
 }
 
 /**
- * 동일 프로젝트+제목 세션을 머지하여 중복 요약을 통합한다.
- * - projectName + normalizedTitle 기준 그룹핑
+ * 동일 프로젝트 세션을 머지하여 프로젝트별 1개 항목으로 통합한다.
+ * - projectName 기준 그룹핑
  * - 2+ 그룹: 통계 합산, flow " → " 연결, significance 최장 채택
  * - 제목에 "(×N)" 표시
  */
@@ -116,7 +116,7 @@ export function mergeSummariesByTitle(sessions: MergedSummary[]): MergedSummary[
 
   const groups = new Map<string, MergedSummary[]>();
   for (const s of sessions) {
-    const key = `${s.projectName ?? ""}::${normalizeTitle(s.topic ?? "", s.projectName ?? "")}`;
+    const key = s.projectName ?? "";
     const group = groups.get(key);
     if (group) {
       group.push(s);

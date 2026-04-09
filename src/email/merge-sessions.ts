@@ -1,7 +1,7 @@
 /**
- * merge-sessions — 동일 프로젝트+제목 세션을 통합하는 유틸리티
+ * merge-sessions — 동일 프로젝트 세션을 통합하는 유틸리티
  *
- * 같은 날짜 내에서 projectName + normalizedTitle이 동일한 세션을 하나로 합친다.
+ * 같은 날짜 내에서 projectName이 동일한 세션을 하나로 합친다.
  * 통계(메시지, 토큰, 시간)는 합산, wrapUp은 가장 상세한 것을 채택한다.
  */
 
@@ -38,9 +38,9 @@ function wrapUpScore(wu?: SessionData["wrapUp"]): number {
 }
 
 /**
- * 동일 프로젝트+제목 세션을 머지
+ * 동일 프로젝트 세션을 머지
  *
- * - projectName + normalizedTitle 기준 그룹핑
+ * - projectName 기준 그룹핑
  * - 그룹 내 세션: 통계 합산, 시간 범위 확장, wrapUp 중 가장 상세한 것 채택
  * - 제목에 "(×N)" 머지 카운트 표시 (2개 이상일 때)
  * - 1개짜리 그룹은 그대로 통과
@@ -51,7 +51,7 @@ export function mergeSessionsByTopic(sessions: SessionData[]): SessionData[] {
   // 그룹핑
   const groups = new Map<string, SessionData[]>();
   for (const s of sessions) {
-    const key = `${s.projectName}::${normalizeTitle(s.title, s.projectName)}`;
+    const key = s.projectName;
     const group = groups.get(key);
     if (group) {
       group.push(s);

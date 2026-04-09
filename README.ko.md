@@ -60,7 +60,7 @@ $ sincenety circle
    - 자동 완료 처리: 자정→전날확정, 월요일→전주확정, 1일→전월확정
    - 변경 감지: data hash 비교로 토큰 절약
    - 휴가일에 [vacation] 라벨 자동 부여
-   - **동일 제목 세션 통합 요약**: 같은 `projectName + normalizedTitle` 세션을 개별 요약 후 통합 재요약 — 중복 제거 및 리포트 품질 향상
+   - **프로젝트 단위 세션 통합 요약**: 같은 `projectName`의 모든 세션을 개별 요약 후 프로젝트별 통합 재요약 — 중복 제거 및 리포트 품질 향상
 
 3. **`sincenety out`** — 스마트 이메일 발신
    - `out`: 일일보고 항상 발송, 금요일에 +주간보고, 월말에 +월간보고
@@ -554,7 +554,7 @@ sincenety/
 │   ├── email/
 │   │   ├── sender.ts           # nodemailer 이메일 발송
 │   │   ├── renderer.ts         # HTML 이메일 렌더러 (보고서 → HTML, 크로스 디바이스 머지)
-│   │   ├── merge-sessions.ts   # 세션 머지 유틸리티 (동일 제목 세션 통합)
+│   │   ├── merge-sessions.ts   # 세션 머지 유틸리티 (프로젝트 단위 세션 통합)
 │   │   ├── resend.ts           # Resend API 이메일 provider
 │   │   ├── provider.ts         # 이메일 provider 추상화 (Gmail MCP/Resend/SMTP)
 │   │   └── template.ts         # Bright 컬러코딩 HTML 이메일 템플릿
@@ -682,7 +682,7 @@ $ sincenety [--token T --key K --email E]
 │  │ --date yyyyMMdd — 특정 날짜 지정          │    │
 │  │                                           │    │
 │  │ D1 크로스 디바이스 세션 pull + 머지        │    │
-│  │ 동일 제목 세션 머지 (×N)                  │    │
+│  │ 프로젝트 단위 세션 머지 (×N)               │    │
 │  │                                           │    │
 │  │ → Gmail MCP / Resend /                    │    │
 │  │   Gmail SMTP / Custom SMTP                │    │
@@ -907,6 +907,15 @@ CLI를 7개 명령에서 3단계 파이프라인으로 전면 재구성:
 - **`src/util/machine-id.ts`**: 크로스플랫폼 하드웨어 ID 감지
 - **테스트 116개**: 기존 108 + cf-ai/machine-id 8개 추가
 
+### v0.8.3 (2026-04-09) — 프로젝트 단위 세션 통합으로 단순화
+
+- **세션 통합 로직 단순화**: 머지 기준이 "프로젝트 내 동일 제목" (`projectName::normalizedTitle`)에서 "프로젝트 단위" (`projectName`만)로 변경. 최종 결과 = 프로젝트당 하나의 항목, 세션 제목과 무관
+- **circle.ts**: `mergeSummariesByTitle()` 그룹핑 키를 `projectName::normalizedTitle`에서 `projectName`으로 변경
+- **merge-sessions.ts**: `mergeSessionsByTopic()` 그룹핑 키를 `projectName::normalizedTitle`에서 `projectName`으로 변경
+- **SKILL.md 업데이트 (양쪽 복사본)**: 기존 2-pass mergeGroup 통합 및 3-pass 프로젝트 통합을 제거하고 `projectName` 기준 단일 2-pass로 교체
+- **`--summarize` 경로**: 동일한 프로젝트 단위 통합 적용
+- **테스트**: 동일 프로젝트의 서로 다른 제목 세션도 머지되도록 기대값 업데이트
+
 ### v0.8.2 (2026-04-09) — Circle 동일 제목 세션 통합 요약
 
 - **circle 동일 제목 세션 머지**: 같은 날짜 내 `projectName + normalizedTitle`이 동일한 세션이 여러 개 있으면, 개별 요약 후 통합 재요약을 생성. 각 세션의 outcome은 합산, flow는 `→`로 연결, significance는 가장 긴 것 채택, nextSteps는 마지막 세션 기준. 머지된 항목은 topic에 `(×N)` 표시
@@ -927,7 +936,7 @@ CLI를 7개 명령에서 3단계 파이프라인으로 전면 재구성:
 ### v0.8.0 (2026-04-09) — 크로스 디바이스 통합 리포트 + 세션 머지
 
 - **크로스 디바이스 통합 리포트**: 여러 기기에서 작업 시 `out` 실행 시 로컬 데이터를 D1에 먼저 push(pre-sync)한 후 다른 기기의 세션을 pull하여 하나의 통합 이메일 리포트로 발송
-- **세션 제목 머지**: 같은 날짜 내에서 `프로젝트명 + 정규화된 제목`이 동일한 세션을 자동 머지 — 통계(메시지, 토큰, 시간) 합산, 가장 상세한 wrapUp 채택, flow 서술을 `→` 구분자로 연결. 머지된 세션은 제목에 `(×N)` 카운트 표시
+- **세션 프로젝트 머지**: 같은 날짜 내에서 동일 `프로젝트명`의 세션을 자동 머지 — 통계(메시지, 토큰, 시간) 합산, 가장 상세한 wrapUp 채택, flow 서술을 `→` 구분자로 연결. 머지된 세션은 제목에 `(×N)` 카운트 표시
 - **타이틀 추출 개선**: 슬래시 명령(/sincenety 등)으로 시작하는 세션에서 5자 이상의 의미 있는 메시지를 우선 선택; 없으면 `[프로젝트명] session`으로 폴백 (빈 제목 방지)
 - **Graceful D1 fallback**: 모든 크로스 디바이스 기능이 try/catch로 감싸져 있어 D1 연결 불가 시 기존 단일 기기 동작으로 자연스럽게 전환
 - **신규 파일**: `src/email/merge-sessions.ts` (세션 머지 유틸리티), `src/cloud/sync.ts` 추가 (`pullCrossDeviceReports`, `checkCrossDeviceEmailSent`)
@@ -1009,9 +1018,9 @@ CLI를 7개 명령에서 3단계 파이프라인으로 전면 재구성:
 - [x] claude-code 요약 품질 개선 (턴 전처리 + SKILL.md 2-pass)
 - [x] Workers AI CLI 샘플 리포트 (GitHub Pages)
 - [x] 크로스 디바이스 통합 리포트 (D1 pull + circle 머지 + 무조건 발신)
-- [x] 세션 제목 머지 (동일 제목 통합, ×N 카운트)
+- [x] 세션 프로젝트 머지 (프로젝트 단위 통합, ×N 카운트)
 - [x] 타이틀 추출 개선 (의미 있는 메시지 우선 + 폴백)
-- [x] circle 동일 제목 세션 통합 요약 (개별 요약 → 통합 재요약)
+- [x] circle 프로젝트 단위 세션 통합 요약 (개별 요약 → 프로젝트별 통합 재요약)
 - [ ] passphrase 설정 기능 완성
 - [ ] 다국어 보고서 출력 (KO 토글 옵션)
 - [ ] 보고서 내보내기 (PDF/HTML standalone)
