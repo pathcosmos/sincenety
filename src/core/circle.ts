@@ -10,6 +10,45 @@ import { runAir, type AirOptions, type AirResult } from "./air.js";
 import type { CfAiConfig } from "../cloud/cf-ai.js";
 
 // ---------------------------------------------------------------------------
+// Text cleaning for claude-code JSON output (mirrors summarizer.ts clean())
+// ---------------------------------------------------------------------------
+
+/** XML/시스템 태그/파일 경로/파일명 제거 — 요약 품질 향상용 */
+function cleanTurnText(text: string): string {
+  return text
+    .replace(/<[^>]*>/g, "")
+    .replace(/Caveat:.*?(?=[\n|]|$)/gi, "")
+    .replace(/Base directory for this skill:.*?(?=[\n|]|$)/gi, "")
+    .replace(/(?:\/(?:Users|Volumes|home|tmp|var|opt|etc|usr)\/)\S+/g, "")
+    .replace(/(?:\.\.?\/)\S+/g, "")
+    .replace(/\b[\w.-]+\.(?:ts|js|tsx|jsx|json|jsonl|md|yaml|yml|toml|css|html|sql|sh|py|go|rs)\b/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/** 의미 없는 단답 턴 필터 */
+const SKIP_INPUTS = new Set(["ok", "yes", "네", "응", "ㅇㅇ", "좋아", "됐어", "확인", "ㅇ", "ㅋ", "고마워", "감사", "알겠어"]);
+
+function isSkipTurn(input: string): boolean {
+  const cleaned = cleanTurnText(input);
+  return cleaned.length <= 3 || SKIP_INPUTS.has(cleaned.toLowerCase());
+}
+
+/** conversationTurns를 claude-code용으로 전처리: clean + filter + truncate + limit 30 */
+function preprocessTurnsForClaudeCode(
+  turns: Array<{ userInput: string; assistantOutput: string; timestamp: number }>,
+): Array<{ userInput: string; assistantOutput: string; timestamp: number }> {
+  return turns
+    .filter((t) => !isSkipTurn(t.userInput))
+    .slice(0, 30)
+    .map((t) => ({
+      userInput: cleanTurnText(t.userInput).slice(0, 200),
+      assistantOutput: cleanTurnText(t.assistantOutput).slice(0, 300),
+      timestamp: t.timestamp,
+    }));
+}
+
+// ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
@@ -160,6 +199,20 @@ export async function circleJson(
       }
     } else {
       sessions[dateStr] = [];
+    }
+  }
+
+  // claude-code 경로: conversationTurns 전처리 (clean + filter + truncate + 30턴 제한)
+  // --summarize 시에는 Workers AI가 자체 전처리하므로 스킵
+  if (!options?.summarize) {
+    for (const dateStr of airResult.changedDates) {
+      const dateSessions = sessions[dateStr] as any[];
+      if (!dateSessions?.length) continue;
+      for (const s of dateSessions) {
+        if (s.conversationTurns?.length) {
+          s.conversationTurns = preprocessTurnsForClaudeCode(s.conversationTurns);
+        }
+      }
     }
   }
 
