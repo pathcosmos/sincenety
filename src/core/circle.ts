@@ -311,6 +311,10 @@ export async function circleJson(
         if (s.conversationTurns?.length) {
           s.conversationTurns = preprocessTurnsForClaudeCode(s.conversationTurns);
         }
+        // SKILL.md용 머지 그룹 힌트
+        const project = s.projectName ?? "";
+        const topic = s.title ?? s.summary ?? "";
+        s.mergeGroup = `${project}::${normalizeTitle(topic, project)}`;
       }
     }
   }
@@ -566,13 +570,20 @@ export async function autoSummarize(
         }
       }
 
-      if (summaries.length > 0) {
+      // 동일 제목 세션 통합 (개별 요약 → 재요약)
+      const mergedSummaries = mergeSummariesByTitle(summaries);
+      const mergeCount = summaries.length - mergedSummaries.length;
+      if (mergeCount > 0) {
+        console.log(`  🔗 ${date}: ${summaries.length} sessions → ${mergedSummaries.length} (${mergeCount} merged)`);
+      }
+
+      if (mergedSummaries.length > 0) {
         let overview: string | null = null;
         if (cfConfig && cfOverview) {
-          overview = await cfOverview(cfConfig, date, summaries);
+          overview = await cfOverview(cfConfig, date, mergedSummaries as any);
         } else {
           // heuristic overview: 세션 topic 요약
-          const topics = summaries.map((s) => s.topic).filter(Boolean);
+          const topics = mergedSummaries.map((s) => s.topic).filter(Boolean);
           overview = topics.length > 0
             ? `${date} 작업: ${topics.join(", ")}`
             : null;
@@ -582,11 +593,11 @@ export async function autoSummarize(
           date,
           type: "daily",
           overview: overview ?? undefined,
-          sessions: summaries,
+          sessions: mergedSummaries,
         });
         summarized++;
         const providerLabel = cfConfig ? "Cloudflare AI" : provider;
-        console.log(`  🤖 ${date} summary done (${summaries.length} sessions, ${providerLabel})`);
+        console.log(`  🤖 ${date} summary done (${mergedSummaries.length} sessions, ${providerLabel})`);
       }
     } catch (err) {
       console.warn(`  ⚠️ ${date} summary failed: ${err instanceof Error ? err.message : String(err)}`);
