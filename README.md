@@ -2,7 +2,7 @@
 
 **Automatic work session tracker for Claude Code** — A 3-phase pipeline that retroactively collects, summarizes, and reports all Claude Code activity. No start/stop needed.
 
-> **[한국어 문서 (Korean)](./README.ko.md)**
+> **[한국어 문서 (Korean)](./README.ko.md)** | **[Sample Report](https://pathcosmos.github.io/sincenety/sample-report.html)**
 
 ```
 $ sincenety
@@ -713,7 +713,7 @@ Auto-migration: v1 → v2 → v3 → v4
 | Email | nodemailer (Gmail SMTP), Resend API |
 | Cloud | Cloudflare D1 REST API (native fetch, zero extra deps) |
 | AI Summarization | Cloudflare Workers AI (Qwen3-30B), zero extra deps |
-| Tests | vitest (116 cases across 11 test files) |
+| Tests | vitest (128 cases across 11 test files) |
 
 ---
 
@@ -723,13 +723,20 @@ Auto-migration: v1 → v2 → v3 → v4
 npm install          # Install dependencies
 npm run build        # Compile TypeScript (dist/)
 npm run dev          # Run with tsx (dev mode)
-npm test             # Run vitest tests (116 cases)
+npm test             # Run vitest tests (128 cases)
 node dist/cli.js     # Direct execution
 ```
 
 ---
 
 ## Changelog
+
+### v0.7.6 (2026-04-09) — sessionId prefix matching + GitHub Pages sample report
+
+- **sessionId prefix matching fallback**: When AI summaries are saved via `circle --save` with truncated or mistyped sessionIds, the renderer (`renderer.ts`) now falls back to prefix matching (first 12 chars) to still map AI summaries to the correct sessions — prevents silent degradation to raw data in emails
+- **`circleSave()` auto-correction**: When saving AI summaries, if the input sessionId doesn't exactly match a DB session, prefix matching resolves the correct ID and stores the corrected version — ensures downstream rendering always has valid IDs
+- **GitHub Pages sample report**: Added `docs/index.html` landing page and `docs/sample-report.html` with a real daily report email sample. Live at [pathcosmos.github.io/sincenety](https://pathcosmos.github.io/sincenety/)
+- **Tests**: 128/128 passing (11 test files)
 
 ### v0.7.4 (2026-04-09) — AI provider routing fix + summarization quality improvements
 
@@ -774,6 +781,8 @@ node dist/cli.js     # Direct execution
 - [ ] External DB connectors (MariaDB/PostgreSQL)
 - [ ] ccusage integration (automatic cost calculation)
 - [ ] Multi-language report output (KO toggle option)
+- [x] Sample report page (GitHub Pages: [pathcosmos.github.io/sincenety](https://pathcosmos.github.io/sincenety/))
+- [x] Defensive sessionId matching (prefix fallback + auto-correction)
 - [ ] Report export (PDF/HTML standalone)
 
 ---

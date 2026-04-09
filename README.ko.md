@@ -1,6 +1,6 @@
 # sincenety
 
-> **[English Documentation (README.md)](./README.md)**
+> **[English Documentation (README.md)](./README.md)** | **[샘플 리포트](https://pathcosmos.github.io/sincenety/sample-report.html)**
 
 **Claude Code 작업 갈무리 도구** — 3단계 파이프라인으로 Claude Code 작업 이력을 자동 수집, 요약, 보고합니다.
 
@@ -718,7 +718,7 @@ DB 파일: `~/.sincenety/sincenety.db` (AES-256-GCM 암호화, 0600 권한)
 | 이메일 | nodemailer (Gmail SMTP), Resend API |
 | 클라우드 | Cloudflare D1 REST API (native fetch, 추가 의존성 없음) |
 | AI 요약 | Cloudflare Workers AI (Qwen3-30B), 추가 의존성 없음 |
-| 테스트 | vitest (116개, 11개 테스트 파일) |
+| 테스트 | vitest (128개, 11개 테스트 파일) |
 
 ### 의존성 (최소)
 
@@ -746,14 +746,14 @@ devDependencies:
 npm install          # 의존성 설치
 npm run build        # TypeScript 컴파일 (dist/)
 npm run dev          # tsx로 개발 실행
-npm test             # vitest 테스트 (116개)
+npm test             # vitest 테스트 (128개)
 node dist/cli.js     # 직접 실행
 ```
 
 ### 테스트
 
 ```bash
-# 전체 테스트 (116개)
+# 전체 테스트 (128개)
 npm test
 
 # 개별 테스트
@@ -886,6 +886,13 @@ CLI를 7개 명령에서 3단계 파이프라인으로 전면 재구성:
 - **`src/util/machine-id.ts`**: 크로스플랫폼 하드웨어 ID 감지
 - **테스트 116개**: 기존 108 + cf-ai/machine-id 8개 추가
 
+### v0.7.6 (2026-04-09) — sessionId prefix 매칭 + GitHub Pages 샘플 리포트
+
+- **sessionId prefix 매칭 폴백**: `circle --save`로 AI 요약 저장 시 sessionId가 잘리거나 변형되어도 렌더러(`renderer.ts`)가 prefix(12자) 매칭으로 올바른 세션에 AI 요약을 매핑 — 이메일에서 raw 데이터로 폴백되는 문제 방지
+- **`circleSave()` 자동 교정**: 입력된 sessionId가 DB 세션과 정확히 일치하지 않으면 prefix 매칭으로 올바른 ID를 찾아 교정된 ID로 저장 — 이후 렌더링에서 항상 유효한 ID 보장
+- **GitHub Pages 샘플 리포트**: `docs/index.html` 랜딩 페이지와 `docs/sample-report.html` 실제 일일보고 이메일 샘플 추가. [pathcosmos.github.io/sincenety](https://pathcosmos.github.io/sincenety/)에서 확인 가능
+- **테스트**: 128/128 통과 (11개 테스트 파일)
+
 ### v0.7.4 (2026-04-09) — AI provider 라우팅 수정 + 요약 품질 개선
 
 - **`autoSummarize()` ai_provider 미존중 버그 수정**: CLI 환경(`sincenety`, `sincenety circle`)에서 `ai_provider` 설정과 무관하게 D1 토큰만 있으면 Workers AI를 호출하던 버그 수정. 이제 `resolveAiProvider()`를 통해 `ai_provider` 설정을 존중
@@ -940,7 +947,14 @@ CLI를 7개 명령에서 3단계 파이프라인으로 전면 재구성:
 - [x] 기본 명령: `sincenety` (인자 없음) 전체 파이프라인 실행 (air → circle → out)
 - [x] 영문 CLI: 모든 사용자 대면 메시지 영문 전환
 - [x] Claude Code 첫 실행 시 ai_provider 설정 필수화
+- [x] Scope 선택: global (전체) / project (특정 프로젝트) 모드
+- [x] Postinstall 셋업 위저드: `npm install -g` 시 대화형 3단계 설정
+- [x] 날짜 지정 보고서: `--date yyyyMMdd`로 out/outd/outw/outm 특정 날짜 발송
+- [x] 샘플 리포트 페이지 (GitHub Pages: [pathcosmos.github.io/sincenety](https://pathcosmos.github.io/sincenety/))
+- [x] 방어적 sessionId 매칭 (prefix 폴백 + 자동 교정)
 - [ ] passphrase 설정 기능 완성
+- [ ] 다국어 보고서 출력 (KO 토글 옵션)
+- [ ] 보고서 내보내기 (PDF/HTML standalone)
 - [ ] 유사 작업 매칭 (TF-IDF 기반)
 - [ ] MariaDB/PostgreSQL 외부 DB 연결
 - [ ] ccusage 연동 (토큰 비용 자동 계산)
@@ -952,7 +966,7 @@ CLI를 7개 명령에서 3단계 파이프라인으로 전면 재구성:
 | 지표 | 수치 |
 |------|------|
 | TypeScript 소스 파일 | 20개 |
-| 테스트 | 116/116 통과 |
+| 테스트 | 128/128 통과 |
 | CLI 명령어 | default + air, circle, out, outd, outw, outm, sync, config |
 | DB 테이블 | 7개 |
 | 의존성 (production) | 3개 (commander, nodemailer, sql.js) |
