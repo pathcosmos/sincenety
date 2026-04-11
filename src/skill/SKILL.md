@@ -160,20 +160,66 @@ sincenety out
 
 **참고:** 휴가일에는 발신이 자동 스킵됩니다 (강제 발신: `sincenety outd`)
 
-## 워크플로우: 주간/월간 보고 생성
+## 파이프라인 모드 (v0.8.4+)
 
-1. 기간 내 일일보고를 JSON으로 조회:
+`out`/`outd`/`outw`/`outm`는 실행 시 내부적으로 `circle`을 돌려 파이프라인을 최신화합니다. 두 가지 모드가 있습니다:
+
+- **full (기본)** — 매 실행마다 이번 주 weekly, 이번 달 monthly의 baseline을 자동으로 재생성합니다. 이 baseline은 해당 기간의 daily 요약들을 프로젝트 단위로 머지한 휴리스틱 요약입니다. 토큰을 조금 더 쓰되 누락 없이 항상 최신 상태를 유지합니다.
+- **smart** — 기존 동작. daily만 요약하고 weekly/monthly는 요일 트리거(금요일/말일)나 catchup 감지 시에만 생성.
+
+**안전 규칙**: `emailedAt != null`인 weekly/monthly row는 **절대 덮어쓰지 않습니다**. 이미 발송된 보고서의 무결성을 보장합니다.
+
+설정 / 전환:
+```bash
+sincenety config --pipeline-mode full    # 또는 smart
+sincenety out --mode full                # 1회만
+```
+
+## 워크플로우: 주간/월간 보고 고품질 재요약
+
+full 모드에서는 weekly/monthly baseline이 자동 생성되므로, `outw`/`outm`을 바로 실행해도 빈 결과가 나오지 않습니다. 하지만 baseline은 휴리스틱 머지라 품질이 제한적이므로, Claude Code가 발송 전에 고품질로 재요약해서 덮어쓰는 것을 권장합니다.
+
+### 1. baseline 생성 확인 (자동)
+
+`sincenety out`을 실행하면 다음 로그가 보입니다:
+```
+📅 weekly baseline refreshed
+📆 monthly baseline refreshed
+```
+이 시점에 이번 주/달 row가 DB에 준비된 상태입니다.
+
+### 2. 기간 내 데이터 조회 및 분석
+
 ```bash
 sincenety circle --json
 ```
+출력된 JSON에서 대상 기간의 daily 세션들을 분석합니다. daily 요약(topic/outcome/flow/significance/nextSteps)이 이미 있으므로, 이를 입력으로 받아 주간/월간 단위의 상위 요약을 작성합니다.
 
-2. JSON을 분석하여 주간/월간 종합 요약을 **직접 생성**
+### 3. 재요약 저장 (baseline 덮어쓰기)
 
-3. 저장:
 ```bash
 echo '{ "date": "YYYY-MM-DD", "overview": "주간 종합", "sessions": [...] }' \
   | sincenety circle --save --type weekly
 ```
+
+- `date`는 **주의 월요일** (weekly) 또는 **달의 1일** (monthly)
+- `sessions`는 프로젝트 단위로 통합된 상위 요약 항목들
+- `overview`는 해당 기간 전체를 관통하는 2-3문장 서술
+
+`circle --save`는 `emailedAt`이 null이면 덮어쓰고, 이미 발송됐으면 그대로 둡니다.
+
+### 4. 발송
+
+```bash
+sincenety outw    # 이번 주 weekly 즉시 발송
+sincenety outm    # 이번 달 monthly 즉시 발송
+```
+
+혹은 Gmail MCP 경로:
+```bash
+sincenety outw --render-only
+```
+→ JSON을 받아 `gmail_create_draft`에 전달.
 
 ## How It Works
 

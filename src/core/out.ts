@@ -6,12 +6,30 @@
  */
 
 import type { StorageAdapter } from "../storage/adapter.js";
-import { runCircle } from "./circle.js";
+import { runCircle, type CircleSummaryError } from "./circle.js";
 import { getWeekBoundary } from "./circle.js";
 import { renderDailyEmail, type RenderedEmail } from "../email/renderer.js";
 import { sendEmail } from "../email/provider.js";
 import type { SessionData } from "../email/template.js";
 import type { D1Client } from "../cloud/d1-client.js";
+
+// ---------------------------------------------------------------------------
+// Pipeline mode — centralized source of truth
+// ---------------------------------------------------------------------------
+
+/** 지원되는 pipeline mode 전체 목록. 새 mode 추가 시 여기만 수정. */
+export const PIPELINE_MODES = ["smart", "full"] as const;
+
+/** Pipeline mode 리터럴 타입 — `"smart" | "full"`와 동치. */
+export type PipelineMode = (typeof PIPELINE_MODES)[number];
+
+/** config DB에서 사용하는 key 이름. */
+export const PIPELINE_MODE_CONFIG_KEY = "pipeline_mode";
+
+/** 런타임 타입 가드 — storage/CLI 입력처럼 문자열로 들어오는 값 검증용. */
+export function isPipelineMode(v: unknown): v is PipelineMode {
+  return typeof v === "string" && (PIPELINE_MODES as readonly string[]).includes(v);
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -28,6 +46,13 @@ export interface OutOptions {
   scope?: import("../config/scope.js").ScopeConfig;
   /** 대상 날짜 (yyyyMMdd, e.g. "20260409") — 미지정 시 오늘 */
   date?: string;
+  /**
+   * 파이프라인 모드.
+   * - "full" (기본): 매번 weekly/monthly baseline도 재생성 (발송본은 보호)
+   * - "smart": daily만 요약, weekly/monthly는 요일 트리거에만 의존 (토큰 절약)
+   * 미지정 시 `pipeline_mode` config 값 → 없으면 "full"
+   */
+  mode?: PipelineMode;
 }
 
 export interface OutResultEntry {
@@ -69,6 +94,52 @@ export function parseDateArg(raw: string): Date {
     throw new Error(`Invalid date: "${raw}" does not represent a valid calendar date`);
   }
   return date;
+}
+
+/**
+ * Pipeline mode 해석.
+ * 우선순위: explicit option > config value > default "full"
+ * 유효하지 않은 값은 무시하고 기본값 사용.
+ */
+export function resolvePipelineMode(
+  explicit: PipelineMode | undefined,
+  configured: string | null | undefined,
+): PipelineMode {
+  if (isPipelineMode(explicit)) return explicit;
+  if (isPipelineMode(configured)) return configured;
+  return "full";
+}
+
+/**
+ * circleResult.summaryErrors 중 렌더 루프에 의해 아직 OutResultEntry로
+ * 기록되지 않은 것을 error entry 배열로 변환.
+ *
+ * - 발송 루프는 `reportTypes`에 포함된 타입의 에러만 기록하므로,
+ *   수요일 `out --mode full` 같은 상황에서 weekly 실패가 조용히 묻힘.
+ * - 이 함수로 잔여 summaryError를 전부 건져 `result.errors`에 반영하여
+ *   cron에서 exit code로 실패를 감지할 수 있게 한다.
+ *
+ * 순수 함수 — 테스트 용이성을 위해 추출.
+ */
+export function collectUnrecordedSummaryErrors(
+  summaryErrors: readonly CircleSummaryError[],
+  existingEntries: readonly OutResultEntry[],
+  today: Date,
+): OutResultEntry[] {
+  const unrecorded: OutResultEntry[] = [];
+  for (const se of summaryErrors) {
+    const alreadyRecorded = existingEntries.some(
+      (e) => e.type === se.type && e.status === "error",
+    );
+    if (alreadyRecorded) continue;
+    unrecorded.push({
+      type: se.type,
+      dateKey: getReportDateKey(se.type, today),
+      status: "error",
+      error: `${se.type} baseline auto-summary failed: ${se.error}`,
+    });
+  }
+  return unrecorded;
 }
 
 /**
@@ -172,11 +243,35 @@ export async function runOut(
 ): Promise<OutResult> {
   const result: OutResult = { sent: 0, skipped: 0, errors: 0, entries: [] };
 
-  // 1. circle 실행으로 데이터 최신화
-  // autoSummarize 내부에서 기존 daily_report가 있으면 스킵하므로 이중 요약 방지됨
-  await runCircle(storage, { scope: options?.scope });
+  // 1. pipeline mode 해석 — CLI 옵션 > config > 기본값 "full"
+  const configured = await storage.getConfig(PIPELINE_MODE_CONFIG_KEY);
+  const mode = resolvePipelineMode(options?.mode, configured);
+
+  // 2. circle 실행으로 데이터 최신화
+  // full 모드: daily + weekly/monthly baseline 재생성 (발송본은 보호)
+  // smart 모드: daily만 (기존 동작)
+  const circleResult = await runCircle(storage, { scope: options?.scope, mode });
+  const failedAutoSummaryTypes = new Set(
+    circleResult.summaryErrors.map((e) => e.type),
+  );
 
   const today = options?.date ? parseDateArg(options.date) : new Date();
+
+  // 2.5. auto-summary 실패를 result에 조기 반영.
+  // 이후 휴가 체크/force/reportTypes 필터 어떤 경로로 빠져도 cron이
+  // exit code로 감지할 수 있게 가장 먼저 기록한다. collectUnrecordedSummaryErrors가
+  // 중복(같은 type의 error entry)을 제거하므로 아래 발송 루프에서도 안전.
+  {
+    const orphans = collectUnrecordedSummaryErrors(
+      circleResult.summaryErrors,
+      result.entries,
+      today,
+    );
+    for (const entry of orphans) {
+      result.errors++;
+      result.entries.push(entry);
+    }
+  }
 
   // 1.1. D1 pre-sync (내 데이터 먼저 올려서 다른 기기가 참조 가능하게)
   let d1Client: D1Client | null = null;
@@ -225,6 +320,12 @@ export async function runOut(
   for (const type of reportTypes) {
     const reportType = type as "daily" | "weekly" | "monthly";
     const dateKey = getReportDateKey(reportType, today);
+
+    // 3.0. auto-summary 실패한 타입은 stale baseline 위 발송 방지 — 발송 스킵.
+    // (에러 entry는 이미 2.5 단계에서 early 수집되었음 — 중복 기록 안 함)
+    if (reportType !== "daily" && failedAutoSummaryTypes.has(reportType)) {
+      continue;
+    }
 
     // 3.1. 크로스 디바이스: 다른 기기의 세션 데이터 수집 (발신은 항상 수행)
     let crossDeviceSessions: SessionData[] | undefined;

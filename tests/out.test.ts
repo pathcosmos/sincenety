@@ -4,7 +4,11 @@ import {
   determineReportTypes,
   getReportDateKey,
   parseDateArg,
+  resolvePipelineMode,
+  collectUnrecordedSummaryErrors,
 } from "../src/core/out.js";
+import type { CircleSummaryError } from "../src/core/circle.js";
+import type { OutResultEntry } from "../src/core/out.js";
 
 // ---------------------------------------------------------------------------
 // isLastDayOfMonth
@@ -210,5 +214,111 @@ describe("--date integration with helpers", () => {
     // 2026-04-08 is Wednesday
     const types = determineReportTypes(parseDateArg("20260408"), []);
     expect(types).toEqual(["daily"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolvePipelineMode
+// ---------------------------------------------------------------------------
+
+describe("resolvePipelineMode", () => {
+  it("defaults to full when nothing is set", () => {
+    expect(resolvePipelineMode(undefined, null)).toBe("full");
+  });
+
+  it("defaults to full when explicit and config both missing", () => {
+    expect(resolvePipelineMode(undefined, undefined)).toBe("full");
+  });
+
+  it("returns explicit option when provided (full)", () => {
+    expect(resolvePipelineMode("full", null)).toBe("full");
+  });
+
+  it("returns explicit option when provided (smart)", () => {
+    expect(resolvePipelineMode("smart", null)).toBe("smart");
+  });
+
+  it("explicit option overrides config", () => {
+    expect(resolvePipelineMode("smart", "full")).toBe("smart");
+    expect(resolvePipelineMode("full", "smart")).toBe("full");
+  });
+
+  it("uses config when no explicit option", () => {
+    expect(resolvePipelineMode(undefined, "smart")).toBe("smart");
+    expect(resolvePipelineMode(undefined, "full")).toBe("full");
+  });
+
+  it("falls back to full for invalid config values", () => {
+    expect(resolvePipelineMode(undefined, "invalid")).toBe("full");
+    expect(resolvePipelineMode(undefined, "")).toBe("full");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// collectUnrecordedSummaryErrors
+// ---------------------------------------------------------------------------
+
+describe("collectUnrecordedSummaryErrors", () => {
+  const today = new Date(2026, 3, 8); // Wednesday — reportTypes=["daily"] only
+
+  it("returns empty when no summary errors", () => {
+    const result = collectUnrecordedSummaryErrors([], [], today);
+    expect(result).toEqual([]);
+  });
+
+  it("promotes weekly error to an entry when not already recorded", () => {
+    const errors: CircleSummaryError[] = [{ type: "weekly", error: "boom" }];
+    const existing: OutResultEntry[] = [];
+    const result = collectUnrecordedSummaryErrors(errors, existing, today);
+    expect(result).toHaveLength(1);
+    expect(result[0].type).toBe("weekly");
+    expect(result[0].status).toBe("error");
+    expect(result[0].error).toContain("boom");
+    expect(result[0].dateKey).toBe("2026-04-06"); // monday of week
+  });
+
+  it("promotes monthly error with correct dateKey (1st of month)", () => {
+    const errors: CircleSummaryError[] = [{ type: "monthly", error: "bust" }];
+    const result = collectUnrecordedSummaryErrors(errors, [], today);
+    expect(result).toHaveLength(1);
+    expect(result[0].type).toBe("monthly");
+    expect(result[0].dateKey).toBe("2026-04-01");
+    expect(result[0].error).toContain("bust");
+  });
+
+  it("skips errors already recorded in existing entries (dedup)", () => {
+    const errors: CircleSummaryError[] = [{ type: "weekly", error: "boom" }];
+    const existing: OutResultEntry[] = [
+      { type: "weekly", dateKey: "2026-04-06", status: "error", error: "already handled" },
+    ];
+    const result = collectUnrecordedSummaryErrors(errors, existing, today);
+    expect(result).toEqual([]);
+  });
+
+  it("does NOT dedup non-error existing entries of same type", () => {
+    // 이론상 있을 수 없는 케이스지만 방어: 기존 entry가 'sent'면 error는 여전히 전파
+    const errors: CircleSummaryError[] = [{ type: "weekly", error: "boom" }];
+    const existing: OutResultEntry[] = [
+      { type: "weekly", dateKey: "2026-04-06", status: "sent" },
+    ];
+    const result = collectUnrecordedSummaryErrors(errors, existing, today);
+    expect(result).toHaveLength(1);
+  });
+
+  it("promotes both weekly and monthly when both failed and neither recorded", () => {
+    const errors: CircleSummaryError[] = [
+      { type: "weekly", error: "w-err" },
+      { type: "monthly", error: "m-err" },
+    ];
+    const result = collectUnrecordedSummaryErrors(errors, [], today);
+    expect(result).toHaveLength(2);
+    expect(result.map((r) => r.type).sort()).toEqual(["monthly", "weekly"]);
+  });
+
+  it("error message embeds the type label for clarity", () => {
+    const errors: CircleSummaryError[] = [{ type: "weekly", error: "db down" }];
+    const result = collectUnrecordedSummaryErrors(errors, [], today);
+    expect(result[0].error).toMatch(/weekly baseline auto-summary failed/);
+    expect(result[0].error).toContain("db down");
   });
 });

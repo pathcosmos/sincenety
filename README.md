@@ -199,6 +199,18 @@ Multi-machine data aggregation via Cloudflare D1:
 - **Machine ID**: hardware-based auto-detection (see below), `config --machine-name` override for custom identification
 - **Zero new dependencies**: uses native `fetch` for D1 REST API — no extra packages added
 
+### Pipeline Mode Switch & Auto Weekly/Monthly Baseline
+
+**v0.8.4** — `out`/`outd`/`outw`/`outm` now **always** have a fresh weekly/monthly baseline in the DB, closing the gap where `outw`/`outm` could silently produce empty results:
+
+- **Auto baseline generation**: On every run, the pipeline aggregates this week's (Mon–Sun) and this month's (1st–last day) `daily_reports`, runs project-level consolidation, and upserts the weekly/monthly row
+- **Emailed-report protection**: Rows with `emailedAt != null` are never overwritten, preserving already-delivered reports
+- **`--mode=full|smart` switch**: `full` (default) regenerates baselines every run; `smart` preserves v0.8.3 behavior (weekly only on Friday, monthly only on month-end — token-saving)
+- **Config-level default**: `sincenety config --pipeline-mode <full|smart>` stores a persistent default
+- **Silent failure hardening**: Auto-summary failures are structured into `CircleResult.summaryErrors`, promoted to `result.errors` by `runOut`, and propagated to CLI exit code (`process.exitCode = 1`) — cron environments can now detect weekly/monthly refresh failures via exit code
+- **`emailedAt === 0` falsy guard fixed**: Explicit `!= null` comparison prevents edge-case overwrite of already-sent reports
+- **JSON.parse warnings**: Corrupted `summaryJson` in a daily row now emits a warning with the failing `reportDate` instead of silently dropping data
+
 ### Cross-Device Consolidated Reports
 
 **v0.8.0** — When working on multiple machines (e.g., Mac + Linux), sessions from all devices are automatically merged into a single daily report:
@@ -580,8 +592,8 @@ sincenety/
 │   ├── encryption.test.ts      # Encryption tests (26 cases)
 │   ├── migration-v4.test.ts    # DB v3→v4 migration tests (7 cases)
 │   ├── air.test.ts             # air command tests (7 cases)
-│   ├── circle.test.ts          # circle command tests (10 cases)
-│   ├── out.test.ts             # out command tests (28 cases)
+│   ├── circle.test.ts          # circle command tests (39 cases)
+│   ├── out.test.ts             # out command tests (47 cases)
 │   ├── vacation.test.ts        # Vacation management tests (13 cases)
 │   ├── d1-client.test.ts       # D1 client tests
 │   ├── sync.test.ts            # Sync tests
@@ -744,13 +756,60 @@ Auto-migration: v1 → v2 → v3 → v4
 npm install          # Install dependencies
 npm run build        # Compile TypeScript (dist/)
 npm run dev          # Run with tsx (dev mode)
-npm test             # Run vitest tests (128 cases)
+npm test             # Run vitest tests (171 cases)
 node dist/cli.js     # Direct execution
 ```
 
 ---
 
 ## Changelog
+
+### v0.8.4 (2026-04-11) — Pipeline mode switch + auto weekly/monthly baseline + silent failure hardening
+
+#### Highlights
+
+- **Auto weekly/monthly baseline generation**: `out`/`outd`/`outw`/`outm` now regenerate this week's weekly and this month's monthly row on every run. Closes the gap where `outw`/`outm` previously produced empty results when weekly/monthly rows didn't exist in the DB (only daily_reports had rows). Already-sent reports (`emailedAt != null`) are protected from overwrite.
+- **`--mode=full|smart` pipeline switch**: New CLI flag and `config --pipeline-mode` setting. `full` (default) regenerates weekly/monthly baselines on every run; `smart` preserves v0.8.3 behavior (token-saving, weekday trigger only — weekly on Friday, monthly on month-end). The resolved mode is CLI option > config value > default `full`.
+- **Silent failure hardening**: Several paths that previously swallowed errors now surface them through structured error channels, visible in CLI exit codes for cron monitoring.
+
+#### Core changes
+
+- **`autoSummarizeWeekly` / `autoSummarizeMonthly`** (`src/core/circle.ts`): Gather this week's (Mon–Sun) or this month's (1st–last day) `daily_reports`, flatten their `summaryJson` sessions, run `mergeSummariesByTitle` for project-level consolidation, and upsert the weekly/monthly row. Both functions share a private helper `summarizeRangeInto` that handles the aggregation, period boundary computation, and upsert logic.
+- **`PipelineMode` type centralization** (`src/core/out.ts`): Single source of truth — exports `PIPELINE_MODES` constant array, `PipelineMode` literal union type, `isPipelineMode()` runtime type guard, and `PIPELINE_MODE_CONFIG_KEY` constant. Replaces 4 copies of inline `"smart" | "full"` literals previously scattered across `out.ts`, `circle.ts`, and `cli.ts`.
+- **`resolvePipelineMode()`**: Pure precedence function — explicit option > config value > default `"full"`. Invalid `configured` values (e.g., typo, old version data) silently fall back to `"full"` — validated by `config --pipeline-mode` on write.
+- **`CircleResult.summaryErrors`**: New field capturing per-type auto-summary failures as `{type: "weekly" | "monthly"; error: string}[]`.
+- **`collectUnrecordedSummaryErrors()`**: Pure helper in `out.ts` that promotes `circleResult.summaryErrors` to `OutResultEntry` error entries, deduplicating against existing render-loop entries.
+- **`runOut` restructuring**: Collects orphan `summaryErrors` as global error entries **immediately after `runCircle`** (before vacation/force/reportTypes branching) — so failures surface even when `out` exits via the vacation early return or when the failed type is not in `reportTypes`.
+- **CLI exit code propagation**: `out`/`outd`/`outw`/`outm` now set `process.exitCode = 1` when `result.errors > 0`. Uses `exitCode` (not `process.exit(1)`) so the `finally` block still runs `storage.close()` for sql.js WASM DB flush safety.
+
+#### Bug fixes
+
+- **`config --pipeline-mode smrt` silently exited 0**: The validation path used `console.log` + fall-through without setting a non-zero exit code — automation couldn't detect typos. Now uses `console.error` + `process.exit(1)` consistent with `out --mode` validation elsewhere.
+- **`emailedAt === 0` falsy guard** (`src/core/circle.ts`): The existing guard `if (existing?.emailedAt) return false` would classify `emailedAt === 0` as "not emailed" (falsy) and allow overwriting an already-sent report. `Date.now()` can never return 0, but manual DB inserts or buggy write paths could produce this value. Replaced with explicit null check: `if (existing && existing.emailedAt != null) return false`.
+- **JSON.parse silent drop**: `summarizeRangeInto`'s `try { JSON.parse(...) } catch {}` swallowed all exceptions without any log — a corrupted daily row would cause that day's sessions to silently vanish from the weekly/monthly aggregate, undercounting totals. Now narrows to `SyntaxError`, emits `console.warn` with the failing `reportDate`, and re-throws other error classes (e.g., `TypeError` from unexpected shapes).
+- **Dead `"finalized"` branch removed**: `summarizeRangeInto` had a `status = todayTs <= periodTo ? "in_progress" : "finalized"` line, but both callers (`autoSummarizeWeekly`, `autoSummarizeMonthly`) derive the range from `today` — so `today` is structurally always within `[rangeFrom, rangeTo]` and the `"finalized"` branch was unreachable. Hardcoded to `"in_progress"`; the period-end transition remains handled by `finalizePreviousReports` as before.
+
+#### Test improvements
+
+**171 tests passing** (baseline 151 → +20 new tests). All new tests follow TDD red → green.
+
+- **`autoSummarizeWeekly` / `autoSummarizeMonthly`** — 8 tests: creates row from this week's/month's dailies, status is `in_progress`, no-data skip, upsert unemailed row, protects emailed row with full snapshot comparison (8 fields: `summaryJson`, `overview`, `sessionCount`, `totalMessages`, `totalTokens`, `emailedAt`, `emailTo`, `createdAt`), `emailedAt === 0` falsy guard.
+- **`summarizeRangeInto` JSON corruption** — 3 tests: malformed JSON warns with `reportDate` and continues with other dailies, non-array JSON (e.g., `"null"`, `"{}"`) is skipped, empty `summaryJson` string is skipped.
+- **Boundary cases** — 5 tests: Sunday as today (exercises `getWeekBoundary` Sunday-specific branch), Monday as today, December→January month rollover, February 2028 leap year (includes Feb 29), February 2027 non-leap (excludes Mar 1).
+- **`runCircle` summaryErrors propagation** — 4 tests using a Proxy-wrapped throwing `StorageAdapter`: weekly failure recorded without aborting monthly, monthly failure recorded independently, smart mode skips weekly/monthly entirely (no errors even when would fail), healthy storage returns empty `summaryErrors`.
+- **`resolvePipelineMode`** — 7 tests: defaults to `full`, explicit option override, config fallback, invalid values fall back to `full`.
+- **`collectUnrecordedSummaryErrors`** — 7 tests: empty input, promotes weekly/monthly to error entries, deduplication against existing entries, multiple failures, error message format embeds type label.
+- **"Preserves emailed" tests strengthened**: previously asserted only `projectName === "sent"` and `emailedAt` preservation (a false-confidence test that would pass even if aggregation ran). Now captures a full before-snapshot and asserts all 8 fields unchanged after, including a sentinel daily with totals that would change the aggregate if overwrite occurred.
+- **Manual fault injection smoke tests**: `runOut` against a throwing storage Proxy confirmed Gap B fix — weekly failure on a vacation day now reports `result.errors = 1` and exit 1, and a `force: weekly` run with a failing monthly auto-summary correctly records the orphaned monthly error.
+
+#### Documentation
+
+- **SKILL.md — new "파이프라인 모드 (v0.8.4+)" section**: explains `full`/`smart` modes and the `emailedAt != null` protection rule.
+- **SKILL.md — "주간/월간 보고 고품질 재요약" workflow**: replaces the old "워크플로우: 주간/월간 보고 생성" section with a 4-step flow — (1) baseline auto-generation via `out`, (2) analysis via `circle --json`, (3) re-summary via `circle --save --type weekly|monthly`, (4) delivery via `outw`/`outm`.
+
+#### Files changed
+
+`src/cli.ts` (+54), `src/core/circle.ts` (+203), `src/core/out.ts` (+109), `src/skill/SKILL.md` (+54), `tests/circle.test.ts` (+625), `tests/out.test.ts` (+110). Total ~1143 insertions / ~12 deletions across 6 files.
 
 ### v0.8.3 (2026-04-09) — Project-level session consolidation
 
@@ -852,6 +911,9 @@ node dist/cli.js     # Direct execution
 - [x] Cross-device consolidated reports (D1 pull + circle merge + always-send)
 - [x] Session merge by project (project-level dedup with ×N count)
 - [x] Improved title extraction (meaningful message priority + fallback)
+- [x] Auto weekly/monthly baseline generation (every `out`/`outd`/`outw`/`outm` run, emailed-report protected)
+- [x] Pipeline mode switch (`--mode=full|smart` + `config --pipeline-mode`)
+- [x] Silent failure hardening (runCircle `summaryErrors` + CLI exit code propagation)
 - [ ] Report export (PDF/HTML standalone)
 
 ---

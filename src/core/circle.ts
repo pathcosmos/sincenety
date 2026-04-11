@@ -8,6 +8,7 @@
 import type { StorageAdapter, DailyReport } from "../storage/adapter.js";
 import { runAir, type AirOptions, type AirResult } from "./air.js";
 import type { CfAiConfig } from "../cloud/cf-ai.js";
+import type { PipelineMode } from "./out.js";
 
 // ---------------------------------------------------------------------------
 // Text cleaning for claude-code JSON output (mirrors summarizer.ts clean())
@@ -56,10 +57,18 @@ export interface CircleOptions extends AirOptions {
   // 추가 옵션은 향후 확장
 }
 
+/** Auto-summary 실행 중 발생한 실패 정보 — runOut이 발송 스킵 판단에 사용. */
+export interface CircleSummaryError {
+  type: "weekly" | "monthly";
+  error: string;
+}
+
 export interface CircleResult {
   airResult: AirResult;
   finalized: string[];
   needsSummary: string[];
+  /** full 모드에서 autoSummarizeWeekly/Monthly가 throw한 경우 기록된다. */
+  summaryErrors: CircleSummaryError[];
 }
 
 export interface CircleSaveSessionInput {
@@ -443,6 +452,159 @@ export async function circleSave(
   await storage.saveDailyReport(report);
 }
 
+// ---------------------------------------------------------------------------
+// autoSummarizeWeekly / autoSummarizeMonthly
+// ---------------------------------------------------------------------------
+
+/**
+ * 주어진 날짜 범위의 daily_reports를 모아서 weekly/monthly row로 upsert.
+ *
+ * - 해당 기간의 daily 리포트 수집
+ * - summaryJson 내 세션들을 flatten
+ * - mergeSummariesByTitle로 프로젝트 단위 통합
+ * - 집계(totalMessages, totalTokens, sessionCount)
+ * - 기존 row가 emailedAt != null이면 스킵 (발송된 보고서 보호)
+ * - 기존 row가 미발송이면 덮어쓰기 (upsert)
+ *
+ * 두 호출자(autoSummarizeWeekly/Monthly)가 `today`로부터 range를 파생하므로,
+ * `today`는 구조적으로 항상 [rangeFrom, rangeTo] 안. status는 항상 "in_progress"이며
+ * 기간 종료 후 `finalizePreviousReports`가 별도로 "finalized"로 전환한다.
+ *
+ * overview는 baseline heuristic (topic 나열). Claude Code가 SKILL.md 흐름으로
+ * 고품질 overview를 덮어쓰기 전까지 최소 수준의 요약을 보장한다.
+ */
+async function summarizeRangeInto(
+  storage: StorageAdapter,
+  type: "weekly" | "monthly",
+  rangeFrom: string, // YYYY-MM-DD inclusive
+  rangeTo: string,   // YYYY-MM-DD inclusive
+  reportDate: string, // weekly=monday, monthly=1st
+): Promise<boolean> {
+  // 1. 기존 발송된 보고서면 건드리지 않음
+  // emailedAt 필드가 존재(= not null)하기만 하면 발송된 것으로 간주.
+  // 단순 `existing?.emailedAt` 체크는 emailedAt === 0에 대해 falsy로 빠져
+  // 덮어쓰기 사고 가능성이 있어 명시적 null 비교 사용.
+  const existing = await storage.getDailyReport(reportDate, type);
+  if (existing && existing.emailedAt != null) return false;
+
+  // 2. 기간 내 daily 리포트 모음
+  const dailies = await storage.getDailyReportsByRange(rangeFrom, rangeTo, "daily");
+  if (dailies.length === 0) return false;
+
+  // 3. 모든 daily의 summaryJson을 flatten
+  // JSON.parse 실패는 경고로 드러내되(언더카운트가 조용히 발생하지 않도록),
+  // 다른 예외는 bare catch로 숨기지 말고 re-throw.
+  const allSessions: MergedSummary[] = [];
+  for (const d of dailies) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(d.summaryJson || "[]");
+    } catch (err) {
+      if (err instanceof SyntaxError) {
+        console.warn(
+          `  ⚠️  ${type} aggregation: skipping daily ${d.reportDate} — summaryJson JSON parse failed: ${err.message}`,
+        );
+        continue;
+      }
+      throw err;
+    }
+    if (!Array.isArray(parsed)) continue;
+    for (const s of parsed as Array<Record<string, unknown>>) {
+      allSessions.push({
+        sessionId: (s.sessionId as string) ?? "",
+        projectName: (s.projectName as string) ?? "",
+        topic: (s.topic as string) ?? "",
+        outcome: (s.outcome as string) ?? "",
+        flow: (s.flow as string) ?? "",
+        significance: (s.significance as string) ?? "",
+        nextSteps: (s.nextSteps as string) ?? "",
+        messageCount: (s.messageCount as number) ?? 0,
+        totalTokens: (s.totalTokens as number) ?? 0,
+        inputTokens: (s.inputTokens as number) ?? 0,
+        outputTokens: (s.outputTokens as number) ?? 0,
+        durationMinutes: (s.durationMinutes as number) ?? 0,
+        model: (s.model as string) ?? "",
+      });
+    }
+  }
+
+  if (allSessions.length === 0) return false;
+
+  // 4. 프로젝트 단위 통합 (이미 daily 내부에서 머지됐더라도, 다른 일자의 같은 프로젝트를 합침)
+  const mergedSessions = mergeSummariesByTitle(allSessions);
+
+  // 5. 집계
+  const totalMessages = mergedSessions.reduce((s, m) => s + (m.messageCount ?? 0), 0);
+  const totalTokens = mergedSessions.reduce((s, m) => s + (m.totalTokens ?? 0), 0);
+
+  // 6. 기간 경계 타임스탬프
+  const [fy, fm, fd] = rangeFrom.split("-").map(Number);
+  const [ty, tm, td] = rangeTo.split("-").map(Number);
+  const periodFrom = new Date(fy, fm - 1, fd, 0, 0, 0, 0).getTime();
+  const periodTo = new Date(ty, tm - 1, td, 23, 59, 59, 999).getTime();
+
+  // 7. status — 호출자가 today로부터 range를 파생하므로 항상 in_progress.
+  // 기간 종료 후 전환은 `finalizePreviousReports`가 담당한다.
+  const status = "in_progress";
+
+  // 8. overview (heuristic baseline — SKILL.md가 덮어쓸 수 있음)
+  const typeLabel = type === "weekly" ? "주간" : "월간";
+  const topics = mergedSessions.map((s) => s.topic).filter(Boolean);
+  const overview = topics.length > 0
+    ? `${reportDate} ${typeLabel} 요약 초안: ${topics.join(", ")}`
+    : null;
+
+  const report: DailyReport = {
+    reportDate,
+    reportType: type,
+    periodFrom,
+    periodTo,
+    sessionCount: mergedSessions.length,
+    totalMessages,
+    totalTokens,
+    summaryJson: JSON.stringify(mergedSessions),
+    overview,
+    reportMarkdown: null,
+    createdAt: Date.now(),
+    emailedAt: null,
+    emailTo: null,
+    status,
+    progressLabel: null,
+    dataHash: null,
+  };
+
+  await storage.saveDailyReport(report);
+  return true;
+}
+
+/**
+ * 이번 주(월~일)의 daily_reports를 모아서 weekly row로 upsert.
+ * 발송된 weekly는 건드리지 않음. 매번 실행 시 baseline 최신화.
+ */
+export async function autoSummarizeWeekly(
+  storage: StorageAdapter,
+  today: Date,
+): Promise<boolean> {
+  const { monday, sunday } = getWeekBoundary(today);
+  return summarizeRangeInto(storage, "weekly", monday, sunday, monday);
+}
+
+/**
+ * 이번 달(1일~말일)의 daily_reports를 모아서 monthly row로 upsert.
+ * 발송된 monthly는 건드리지 않음. 매번 실행 시 baseline 최신화.
+ */
+export async function autoSummarizeMonthly(
+  storage: StorageAdapter,
+  today: Date,
+): Promise<boolean> {
+  const year = today.getFullYear();
+  const month = today.getMonth(); // 0-based
+  const firstStr = toDateStr(new Date(year, month, 1));
+  const lastDay = new Date(year, month + 1, 0); // 다음 달 0일 = 이번 달 마지막 날
+  const lastStr = toDateStr(lastDay);
+  return summarizeRangeInto(storage, "monthly", firstStr, lastStr, firstStr);
+}
+
 /**
  * 변경된 날짜의 세션을 자동 요약.
  * 모든 ai_provider에서 동작 — cloudflare는 Workers AI, 그 외는 heuristic/API.
@@ -610,19 +772,55 @@ export async function autoSummarize(
 /**
  * circle 메인 오케스트레이터 — air 실행 + finalize + 변경 날짜 목록 반환.
  * SKILL.md 흐름(--json/--save)이 아닌 경우, Cloudflare AI로 자동 요약.
+ *
+ * @param options.mode
+ *   - "full" (기본): daily autoSummarize 이후 weekly/monthly도 매번 재생성
+ *     (이번 주/이번 달 baseline 최신화, 발송된 보고서는 건드리지 않음)
+ *   - "smart": 기존 동작 — daily만 요약, weekly/monthly는 out 레벨의
+ *     요일 트리거 및 catchup에 맡김 (토큰 절약 모드)
  */
 export async function runCircle(
   storage: StorageAdapter,
-  options?: CircleOptions & { json?: boolean; save?: boolean; skipAutoSummarize?: boolean },
+  options?: CircleOptions & {
+    json?: boolean;
+    save?: boolean;
+    skipAutoSummarize?: boolean;
+    mode?: PipelineMode;
+  },
 ): Promise<CircleResult> {
   const airResult = await runAir(storage, options);
   const finalized = await finalizePreviousReports(storage, new Date());
+  const summaryErrors: CircleSummaryError[] = [];
 
-  // Auto-summarize with Cloudflare AI (when not using SKILL.md flow)
+  // Auto-summarize (when not using SKILL.md --json/--save flow)
   if (!options?.json && !options?.save && !options?.skipAutoSummarize) {
     const summarized = await autoSummarize(storage, airResult.changedDates);
     if (summarized > 0) {
       console.log(`  🤖 ${summarized} day(s) summarized`);
+    }
+
+    // Full mode: weekly/monthly baseline 재생성 — 매번 덮어쓰되 발송본은 보호.
+    // 각 타입의 실패는 summaryErrors에 기록되고, runOut이 해당 타입 발송을
+    // 스킵하여 stale baseline 위 발송을 방지한다.
+    const mode = options?.mode ?? "full";
+    if (mode === "full") {
+      const today = new Date();
+      try {
+        const wrote = await autoSummarizeWeekly(storage, today);
+        if (wrote) console.log(`  📅 weekly baseline refreshed`);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.warn(`  ⚠️  weekly auto-summary failed: ${msg}`);
+        summaryErrors.push({ type: "weekly", error: msg });
+      }
+      try {
+        const wrote = await autoSummarizeMonthly(storage, today);
+        if (wrote) console.log(`  📆 monthly baseline refreshed`);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.warn(`  ⚠️  monthly auto-summary failed: ${msg}`);
+        summaryErrors.push({ type: "monthly", error: msg });
+      }
     }
   }
 
@@ -630,5 +828,6 @@ export async function runCircle(
     airResult,
     finalized,
     needsSummary: airResult.changedDates,
+    summaryErrors,
   };
 }

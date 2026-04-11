@@ -6,16 +6,35 @@ import { existsSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { runAir } from "./core/air.js";
 import { runCircle, circleJson, circleSave } from "./core/circle.js";
+import {
+  isPipelineMode,
+  PIPELINE_MODES,
+  PIPELINE_MODE_CONFIG_KEY,
+  type PipelineMode,
+} from "./core/out.js";
 import { SqlJsAdapter } from "./storage/sqljs-adapter.js";
 import type { StorageAdapter } from "./storage/adapter.js";
 import { readScope, promptScope } from "./config/scope.js";
+
+/**
+ * CLI --mode 플래그 파서.
+ * 유효하지 않으면 stderr에 에러 + exit(1). 미지정 시 undefined 반환.
+ */
+function parseModeFlag(raw: unknown): PipelineMode | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (isPipelineMode(raw)) return raw;
+  console.error(
+    `  ❌ Invalid --mode value: "${String(raw)}" (expected: ${PIPELINE_MODES.join(" | ")})`,
+  );
+  process.exit(1);
+}
 
 const program = new Command();
 
 program
   .name("sincenety")
   .description("Claude Code work session tracker")
-  .version("0.8.2");
+  .version("0.8.4");
 
 // ─── setup reminder ─────────────────────────────────────
 
@@ -218,6 +237,12 @@ async function showConfigStatus(storage: StorageAdapter): Promise<void> {
   const aiVal = aiProviderExplicit ?? "auto";
   const aiResolved = aiProviderExplicit ? resolved : `auto → ${resolved}`;
   console.log(`  AI summary: ai_provider = ${aiVal} (${aiResolved})`);
+
+  // Pipeline mode
+  const pipelineMode = await storage.getConfig(PIPELINE_MODE_CONFIG_KEY);
+  const pipelineVal = isPipelineMode(pipelineMode) ? pipelineMode : "full";
+  const pipelineSource = isPipelineMode(pipelineMode) ? "set" : "default";
+  console.log(`  Pipeline: pipeline_mode = ${pipelineVal} (${pipelineSource})`);
   console.log("");
 }
 
@@ -439,6 +464,10 @@ program
   .option("--render-only", "Output HTML/subject/recipient JSON (for Gmail MCP)")
   .option("--date <yyyyMMdd>", "Target date (e.g. 20260409)")
   .option("--history", "Show recent send history")
+  .option(
+    "--mode <mode>",
+    "Pipeline mode: full (regenerate weekly/monthly baseline every run) | smart (daily only, weekly/monthly on trigger)",
+  )
   .action(async (options) => {
     const storage = new SqlJsAdapter();
     try {
@@ -502,10 +531,12 @@ program
 
       await requireSetup(storage);
       const { runOut } = await import("./core/out.js");
+      const mode = parseModeFlag(options.mode);
       const result = await runOut(storage, {
         preview: options.preview,
         renderOnly: options.renderOnly,
         date: options.date,
+        mode,
       });
       if (!options.renderOnly) {
         const parts = [`${result.sent} sent`, `${result.skipped} skipped`];
@@ -517,6 +548,8 @@ program
           console.error(`  ⚠️  [${e.type}] ${e.error}`);
         }
       }
+      // 에러가 하나라도 있으면 exit code 1 (cron에서 감지 가능)
+      if (result.errors > 0) process.exitCode = 1;
     } catch (err) {
       console.error(
         `  ❌ ${err instanceof Error ? err.message : String(err)}`,
@@ -539,16 +572,22 @@ for (const [cmd, type, desc] of [
     .description(desc)
     .option("--preview", "Preview only, do not send")
     .option("--date <yyyyMMdd>", "Target date (e.g. 20260409)")
+    .option(
+      "--mode <mode>",
+      "Pipeline mode: full (regenerate weekly/monthly baseline) | smart (minimal)",
+    )
     .action(async (options) => {
       const storage = new SqlJsAdapter();
       try {
         await storage.initialize();
         await requireSetup(storage);
         const { runOut } = await import("./core/out.js");
+        const mode = parseModeFlag(options.mode);
         const result = await runOut(storage, {
           force: type,
           preview: options.preview,
           date: options.date,
+          mode,
         });
         const parts = [`${result.sent} sent`, `${result.skipped} skipped`];
         if (result.errors > 0) parts.push(`${result.errors} errors`);
@@ -558,6 +597,8 @@ for (const [cmd, type, desc] of [
             console.error(`  ⚠️  [${e.type}] ${e.error}`);
           }
         }
+        // 에러가 하나라도 있으면 exit code 1 (cron에서 감지 가능)
+        if (result.errors > 0) process.exitCode = 1;
       } catch (err) {
         console.error(
           `  ❌ ${err instanceof Error ? err.message : String(err)}`,
@@ -591,6 +632,7 @@ program
   .option("--d1-token <token>", "Cloudflare API Token")
   .option("--machine-name <name>", "Machine identifier name")
   .option("--ai-provider <provider>", "AI summary provider (cloudflare | anthropic | claude-code | auto)")
+  .option("--pipeline-mode <mode>", "Default pipeline mode for out/outd/outw/outm (full | smart)")
   .option("--setup-d1", "D1 setup wizard")
   .option("--setup", "Run setup wizard")
   .action(async (options) => {
@@ -776,6 +818,18 @@ program
           console.log(`  ai_provider = ${options.aiProvider}`);
           changed = true;
         }
+      }
+      if (options.pipelineMode) {
+        hasAction = true;
+        if (!isPipelineMode(options.pipelineMode)) {
+          console.error(
+            `  ❌ Invalid --pipeline-mode value: "${options.pipelineMode}" (expected: ${PIPELINE_MODES.join(" | ")})`,
+          );
+          process.exit(1);
+        }
+        await storage.setConfig(PIPELINE_MODE_CONFIG_KEY, options.pipelineMode);
+        console.log(`  pipeline_mode = ${options.pipelineMode}`);
+        changed = true;
       }
       if (options.setupD1) {
         hasAction = true;

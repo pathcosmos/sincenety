@@ -198,6 +198,18 @@ Cloudflare D1을 통한 멀티머신 데이터 통합:
 - **머신 ID**: 하드웨어 기반 자동 감지 (아래 참조), `config --machine-name`으로 커스텀 식별
 - **의존성 무추가**: D1 REST API는 native `fetch` 사용 -- 새 패키지 없음
 
+### 파이프라인 모드 스위치 & 주간/월간 베이스라인 자동 생성
+
+**v0.8.4** — `out`/`outd`/`outw`/`outm` 실행 시 DB에 **항상** 최신 weekly/monthly 베이스라인이 존재하도록 보장하여, `outw`/`outm`이 빈 결과를 내던 구조적 공백을 해소합니다:
+
+- **베이스라인 자동 생성**: 매 실행마다 이번 주(월~일)와 이번 달(1일~말일)의 `daily_reports`를 모아 프로젝트 단위 통합 후 weekly/monthly row를 upsert
+- **발송본 보호**: `emailedAt != null`인 row는 절대 덮어쓰지 않아 이미 발송된 보고서의 무결성 보장
+- **`--mode=full|smart` 스위치**: `full`(기본)은 매 실행마다 베이스라인 재생성, `smart`는 v0.8.3 동작 유지(금요일에만 weekly, 말일에만 monthly — 토큰 절약)
+- **config 기본값**: `sincenety config --pipeline-mode <full|smart>`로 영구 기본값 설정 가능
+- **묵음 실패 차단**: auto-summary 실패를 `CircleResult.summaryErrors`로 구조화하고, `runOut`이 이를 `result.errors`로 승격, CLI가 `process.exitCode = 1`로 전파 — cron 환경에서 weekly/monthly 재생성 실패를 exit code로 감지 가능
+- **`emailedAt === 0` falsy 가드 수정**: 명시적 `!= null` 비교로 발송된 보고서의 엣지 케이스 덮어쓰기 방지
+- **JSON.parse 경고 출력**: 손상된 `summaryJson`이 있는 daily row는 실패한 `reportDate`를 명시하는 warn을 출력. 이전처럼 조용히 데이터가 사라지지 않음
+
 ### 크로스 디바이스 통합 리포트
 
 **v0.8.0** — 여러 기기(예: Mac + Linux)에서 작업하면 모든 기기의 세션이 자동으로 하나의 일일보고로 합쳐집니다:
@@ -739,7 +751,7 @@ DB 파일: `~/.sincenety/sincenety.db` (AES-256-GCM 암호화, 0600 권한)
 | 이메일 | nodemailer (Gmail SMTP), Resend API |
 | 클라우드 | Cloudflare D1 REST API (native fetch, 추가 의존성 없음) |
 | AI 요약 | Cloudflare Workers AI (Qwen3-30B), 추가 의존성 없음 |
-| 테스트 | vitest (128개, 11개 테스트 파일) |
+| 테스트 | vitest (171개, 11개 테스트 파일) |
 
 ### 의존성 (최소)
 
@@ -767,22 +779,22 @@ devDependencies:
 npm install          # 의존성 설치
 npm run build        # TypeScript 컴파일 (dist/)
 npm run dev          # tsx로 개발 실행
-npm test             # vitest 테스트 (128개)
+npm test             # vitest 테스트 (171개)
 node dist/cli.js     # 직접 실행
 ```
 
 ### 테스트
 
 ```bash
-# 전체 테스트 (128개)
+# 전체 테스트 (171개)
 npm test
 
 # 개별 테스트
 npx vitest run tests/encryption.test.ts   # 암호화 (26개)
 npx vitest run tests/migration-v4.test.ts # DB 마이그레이션 (7개)
 npx vitest run tests/air.test.ts          # air 명령 (7개)
-npx vitest run tests/circle.test.ts       # circle 명령 (10개)
-npx vitest run tests/out.test.ts          # out 명령 (28개)
+npx vitest run tests/circle.test.ts       # circle 명령 (39개)
+npx vitest run tests/out.test.ts          # out 명령 (47개)
 ```
 
 ### 로컬 npx 테스트
@@ -907,6 +919,53 @@ CLI를 7개 명령에서 3단계 파이프라인으로 전면 재구성:
 - **`src/util/machine-id.ts`**: 크로스플랫폼 하드웨어 ID 감지
 - **테스트 116개**: 기존 108 + cf-ai/machine-id 8개 추가
 
+### v0.8.4 (2026-04-11) — 파이프라인 모드 스위치 + 주간/월간 베이스라인 자동 생성 + 묵음 실패 차단
+
+#### 핵심 요약
+
+- **주간/월간 베이스라인 자동 생성**: `out`/`outd`/`outw`/`outm` 실행 시마다 이번 주 weekly와 이번 달 monthly row를 DB에 자동 upsert. 이전에는 `daily_reports`에만 row가 있고 weekly/monthly row는 생성되지 않아서, `outw`/`outm`이 빈 결과를 내는 구조적 공백이 있었음. 이미 발송된 보고서(`emailedAt != null`)는 보호되어 절대 덮어쓰지 않음.
+- **`--mode=full|smart` 파이프라인 스위치**: 새 CLI 플래그와 `config --pipeline-mode` 설정 추가. `full`(기본)은 매 실행마다 weekly/monthly 베이스라인을 재생성, `smart`는 v0.8.3까지의 동작을 유지(토큰 절약, 요일 트리거만 — 금요일 weekly, 말일 monthly). 모드 결정 우선순위는 CLI 옵션 > config 값 > 기본값 `full`.
+- **묵음 실패 차단**: 이전에는 `console.warn`만 찍고 파이프라인이 계속 진행되던 실패 경로 여러 곳을 구조화된 에러 채널로 표면화. CLI exit code로 cron 환경에서 실패를 감지할 수 있게 됨.
+
+#### 핵심 변경
+
+- **`autoSummarizeWeekly` / `autoSummarizeMonthly`** (`src/core/circle.ts`): 이번 주(월~일) 또는 이번 달(1일~말일)의 `daily_reports`를 모아 `summaryJson`의 세션을 flatten한 뒤, `mergeSummariesByTitle`로 프로젝트 단위 통합을 수행해 weekly/monthly row를 upsert. 두 함수는 공통 private helper `summarizeRangeInto`가 집계/기간 경계 계산/upsert 로직을 담당.
+- **`PipelineMode` 타입 중앙화** (`src/core/out.ts`): `PIPELINE_MODES` 상수 배열, `PipelineMode` 리터럴 유니언 타입, `isPipelineMode()` 런타임 타입가드, `PIPELINE_MODE_CONFIG_KEY` 상수를 한 곳에 export. 기존에 `out.ts`·`circle.ts`·`cli.ts` 네 곳에 흩어져 있던 `"smart" | "full"` 리터럴 중복을 제거.
+- **`resolvePipelineMode()`**: 우선순위 해석 순수 함수 — explicit option > config value > 기본값 `"full"`. 유효하지 않은 `configured` 값(오타, 구버전 데이터 등)은 조용히 `"full"`로 폴백 — `config --pipeline-mode` 쓰기 시점에 검증이 걸리므로 안전.
+- **`CircleResult.summaryErrors`**: auto-summary 실패를 타입별로 기록하는 신규 필드 — `{type: "weekly" | "monthly"; error: string}[]`.
+- **`collectUnrecordedSummaryErrors()`**: `out.ts`의 순수 헬퍼 — `circleResult.summaryErrors`를 `OutResultEntry` error로 승격시키되, 렌더 루프에서 이미 기록한 항목은 중복 제거.
+- **`runOut` 구조 재정렬**: `runCircle` 직후에 `summaryErrors`를 글로벌 error entry로 **먼저** 수집. 휴가 체크/force/reportTypes 분기 이전에 기록되므로, 휴가일 early return으로 빠지거나 실패 타입이 `reportTypes`에 포함되지 않아도 실패가 반드시 반영됨.
+- **CLI exit code 전파**: `out`/`outd`/`outw`/`outm`이 `result.errors > 0`일 때 `process.exitCode = 1` 설정. `process.exit(1)`이 아닌 `exitCode`를 쓰는 이유는 `finally` 블록의 `storage.close()`가 끝까지 실행되어 sql.js WASM DB flush 안정성이 확보되기 때문.
+
+#### 버그 수정
+
+- **`config --pipeline-mode smrt` 타이포가 exit 0으로 조용히 끝나던 문제**: 검증 경로가 `console.log` 후 fall-through로 종료해서 스크립트/CI가 오타를 감지할 수 없었음. 이제 `out --mode` 검증과 동일하게 `console.error` + `process.exit(1)`로 실패.
+- **`emailedAt === 0` falsy 가드**: 기존 가드 `if (existing?.emailedAt) return false`는 `emailedAt === 0`을 falsy로 판정해 "미발송"으로 분류하므로, 발송된 row를 덮어쓸 수 있는 엣지 케이스가 있었음. `Date.now()`는 0을 반환할 일이 없지만 수동 DB 삽입이나 버그로 이 값이 들어올 수 있음. 명시적 null 비교 `if (existing && existing.emailedAt != null) return false`로 교체.
+- **JSON.parse 묵음 드롭**: `summarizeRangeInto`의 `try { JSON.parse(...) } catch {}` 블록이 모든 예외를 흔적 없이 삼키던 문제. 손상된 daily row 하나가 해당 날짜의 세션을 조용히 누락시켜 집계 언더카운트가 발생할 수 있었음. 이제 `SyntaxError`만 catch하여 실패한 `reportDate`를 명시한 `console.warn`을 내고, 그 외 예외 클래스(`TypeError` 등)는 re-throw.
+- **dead `"finalized"` 분기 제거**: `summarizeRangeInto`에 있던 `status = todayTs <= periodTo ? "in_progress" : "finalized"` 분기가 두 호출자(`autoSummarizeWeekly`/`autoSummarizeMonthly`)가 `today`로부터 range를 파생하는 구조상 `today`는 항상 `[rangeFrom, rangeTo]` 안이라 `"finalized"` 경로가 절대 실행되지 않는 dead code였음. `"in_progress"`로 하드코딩하고 기간 종료 시점 전환은 기존처럼 `finalizePreviousReports`가 담당.
+
+#### 테스트 개선
+
+**171개 테스트 전부 통과** (기준선 151 → +20 신규). 모든 신규 테스트는 TDD red → green 원칙을 따름.
+
+- **`autoSummarizeWeekly` / `autoSummarizeMonthly`** — 8개: 이번 주/달 daily로부터 row 생성, 상태는 `in_progress`, 데이터 없을 때 스킵, 미발송 row upsert, 발송 row 보호(8개 필드 스냅샷 비교 — `summaryJson`/`overview`/`sessionCount`/`totalMessages`/`totalTokens`/`emailedAt`/`emailTo`/`createdAt`), `emailedAt === 0` falsy 가드.
+- **`summarizeRangeInto` JSON 손상 처리** — 3개: 손상된 JSON에서 `reportDate` 경고 후 나머지 daily는 정상 처리, 배열이 아닌 JSON(예: `"null"`, `"{}"`)은 스킵, 빈 `summaryJson` 문자열은 스킵.
+- **경계 케이스** — 5개: 오늘이 일요일(`getWeekBoundary`의 일요일 전용 분기 검증), 오늘이 월요일, 12월→1월 월 경계, 2028년 2월 윤년(2/29 포함), 2027년 2월 평년(3/1 제외).
+- **`runCircle` summaryErrors 전파** — 4개. Proxy로 감싼 throwing `StorageAdapter`를 주입하여 검증: weekly 실패가 monthly 진행을 막지 않음, monthly 실패가 weekly와 독립 기록, smart 모드는 호출 자체를 건너뛰므로 에러 없음, 정상 storage는 빈 `summaryErrors` 반환.
+- **`resolvePipelineMode`** — 7개: 기본값, explicit 옵션 override, config 폴백, 유효하지 않은 값 처리.
+- **`collectUnrecordedSummaryErrors`** — 7개: 빈 입력, weekly/monthly 승격, 기존 entry와의 중복 제거, 다중 실패, 에러 메시지 포맷 검증.
+- **"발송 보호" 테스트 강화**: 이전엔 `projectName === "sent"`와 `emailedAt`만 확인하던 테스트(aggregation이 실행돼도 이 두 값은 유지되므로 실제 보호를 증명 못 하던 false-confidence 테스트)를 before/after 스냅샷 비교로 바꿔 8개 필드 전부 불변 검증. 덮어쓰기가 실행되면 totals가 변할 만큼 큰 sentinel daily를 의도적으로 심어두고 감지.
+- **수동 fault injection 스모크 테스트**: Proxy로 throwing storage를 주입한 상태에서 `runOut`을 돌려 Gap B 수정을 확증 — 휴가일에 weekly 실패 시 `result.errors = 1` + exit 1, `force: weekly`에 monthly auto-summary 실패 시 orphan monthly 에러가 글로벌 entry로 기록됨.
+
+#### 문서 업데이트
+
+- **SKILL.md — "파이프라인 모드 (v0.8.4+)" 섹션 신설**: `full`/`smart` 모드 설명과 `emailedAt != null` 보호 규칙 명시.
+- **SKILL.md — "주간/월간 보고 고품질 재요약" 워크플로우**: 기존 "워크플로우: 주간/월간 보고 생성" 섹션을 4단계 흐름으로 재작성 — (1) `out` 실행으로 베이스라인 자동 생성, (2) `circle --json`으로 기간 데이터 조회/분석, (3) `circle --save --type weekly|monthly`로 재요약 덮어쓰기, (4) `outw`/`outm`으로 발송.
+
+#### 변경 파일
+
+`src/cli.ts` (+54), `src/core/circle.ts` (+203), `src/core/out.ts` (+109), `src/skill/SKILL.md` (+54), `tests/circle.test.ts` (+625), `tests/out.test.ts` (+110). 6개 파일 총 ~1143 insertions / ~12 deletions.
+
 ### v0.8.3 (2026-04-09) — 프로젝트 단위 세션 통합으로 단순화
 
 - **세션 통합 로직 단순화**: 머지 기준이 "프로젝트 내 동일 제목" (`projectName::normalizedTitle`)에서 "프로젝트 단위" (`projectName`만)로 변경. 최종 결과 = 프로젝트당 하나의 항목, 세션 제목과 무관
@@ -933,14 +992,14 @@ CLI를 7개 명령에서 3단계 파이프라인으로 전면 재구성:
 - **변경 파일**: `src/core/circle.ts` (D1 pull + merge in `autoSummarize`), `src/core/out.ts` (dedup skip 블록 제거)
 - **테스트**: 128/128 통과 (11개 테스트 파일)
 
-### v0.8.0 (2026-04-09) — 크로스 디바이스 통합 리포트 + 세션 머지
+### v0.8.0 (2026-04-09) — 크로스 디바이스 통합 리포트 + 프로젝트별 세션 머지
 
-- **크로스 디바이스 통합 리포트**: 여러 기기에서 작업 시 `out` 실행 시 로컬 데이터를 D1에 먼저 push(pre-sync)한 후 다른 기기의 세션을 pull하여 하나의 통합 이메일 리포트로 발송
-- **세션 프로젝트 머지**: 같은 날짜 내에서 동일 `프로젝트명`의 세션을 자동 머지 — 통계(메시지, 토큰, 시간) 합산, 가장 상세한 wrapUp 채택, flow 서술을 `→` 구분자로 연결. 머지된 세션은 제목에 `(×N)` 카운트 표시
-- **타이틀 추출 개선**: 슬래시 명령(/sincenety 등)으로 시작하는 세션에서 5자 이상의 의미 있는 메시지를 우선 선택; 없으면 `[프로젝트명] session`으로 폴백 (빈 제목 방지)
-- **Graceful D1 fallback**: 모든 크로스 디바이스 기능이 try/catch로 감싸져 있어 D1 연결 불가 시 기존 단일 기기 동작으로 자연스럽게 전환
-- **신규 파일**: `src/email/merge-sessions.ts` (세션 머지 유틸리티), `src/cloud/sync.ts` 추가 (`pullCrossDeviceReports`, `checkCrossDeviceEmailSent`)
-- **테스트**: 128/128 통과 (11개 테스트 파일)
+- **크로스 디바이스 통합 리포트**: 여러 기기에서 작업할 때 `out` 실행 시 로컬 데이터를 D1에 먼저 push(pre-sync)한 뒤 다른 기기의 세션을 pull하여 하나의 통합 이메일 리포트로 발송.
+- **프로젝트별 세션 머지**: 같은 날짜 내 동일 `프로젝트명` 세션을 자동 머지 — 통계(메시지/토큰/시간) 합산, 가장 상세한 wrapUp 채택, flow 서술을 `→` 구분자로 연결. 머지된 세션은 제목에 `(×N)` 카운트를 표시.
+- **타이틀 추출 개선**: 슬래시 명령(`/sincenety` 등)으로 시작하는 세션에서 5자 이상의 의미 있는 메시지를 우선 선택. 없으면 `[프로젝트명] session`으로 폴백하여 빈 제목을 방지.
+- **Graceful D1 fallback**: 모든 크로스 디바이스 기능이 try/catch로 감싸져 있어 D1 연결 불가 시 기존 단일 기기 동작으로 자연스럽게 전환.
+- **신규 파일**: `src/email/merge-sessions.ts`(세션 머지 유틸리티), `src/cloud/sync.ts`에 `pullCrossDeviceReports`/`checkCrossDeviceEmailSent` 추가.
+- **테스트**: 128/128 통과 (11개 테스트 파일).
 
 ### v0.7.7 (2026-04-09) — claude-code 요약 품질 개선 + Workers AI CLI 샘플 리포트
 
@@ -1017,10 +1076,13 @@ CLI를 7개 명령에서 3단계 파이프라인으로 전면 재구성:
 - [x] 방어적 sessionId 매칭 (prefix 폴백 + 자동 교정)
 - [x] claude-code 요약 품질 개선 (턴 전처리 + SKILL.md 2-pass)
 - [x] Workers AI CLI 샘플 리포트 (GitHub Pages)
-- [x] 크로스 디바이스 통합 리포트 (D1 pull + circle 머지 + 무조건 발신)
-- [x] 세션 프로젝트 머지 (프로젝트 단위 통합, ×N 카운트)
+- [x] 크로스 디바이스 통합 리포트 (D1 pull + circle 통합 + 무조건 발신)
+- [x] 프로젝트 단위 세션 통합 (`projectName` 기준, ×N 카운트 표시)
 - [x] 타이틀 추출 개선 (의미 있는 메시지 우선 + 폴백)
 - [x] circle 프로젝트 단위 세션 통합 요약 (개별 요약 → 프로젝트별 통합 재요약)
+- [x] 주간/월간 베이스라인 자동 생성 (`out`/`outd`/`outw`/`outm` 실행 시마다, 발송본 보호)
+- [x] 파이프라인 모드 스위치 (`--mode=full|smart` + `config --pipeline-mode`)
+- [x] 묵음 실패 차단 (runCircle `summaryErrors` + CLI exit code 전파)
 - [ ] passphrase 설정 기능 완성
 - [ ] 다국어 보고서 출력 (KO 토글 옵션)
 - [ ] 보고서 내보내기 (PDF/HTML standalone)
@@ -1030,12 +1092,12 @@ CLI를 7개 명령에서 3단계 파이프라인으로 전면 재구성:
 
 ---
 
-## 프로젝트 수치 (v0.5.0 기준)
+## 프로젝트 수치 (v0.8.4 기준)
 
 | 지표 | 수치 |
 |------|------|
-| TypeScript 소스 파일 | 20개 |
-| 테스트 | 135/135 통과 |
+| TypeScript 소스 파일 | 20+개 |
+| 테스트 | 171/171 통과 |
 | CLI 명령어 | default + air, circle, out, outd, outw, outm, sync, config |
 | DB 테이블 | 7개 |
 | 의존성 (production) | 3개 (commander, nodemailer, sql.js) |
