@@ -764,6 +764,33 @@ node dist/cli.js     # Direct execution
 
 ## Changelog
 
+### v0.8.5 (2026-04-15) — Auto-install Claude Code skill on `npm install -g`
+
+#### Highlights
+
+- **Fixes "`/sincenety` not listed on other machines"**: Before v0.8.5, `npm install -g sincenety` only installed the CLI binary — the Claude Code skill at `~/.claude/skills/sincenety/SKILL.md` was never created, so the slash command did not show up after install on a fresh machine. The skill only existed on the original development machine where it had been placed manually.
+- **Root cause (two bugs compounded)**:
+  1. `package.json` `files` whitelist contained only `["dist"]` — `src/skill/SKILL.md` was **not included in the npm tarball** at all, so postinstall had nothing to copy even if it had wanted to.
+  2. `src/postinstall.ts` had **no skill-copy logic** whatsoever (verified by grep — zero matches for `skill|SKILL|.claude`). The existing postinstall was a setup wizard for D1/SMTP that early-returned with a one-line message on non-TTY environments, and did nothing at all regarding Claude Code skill registration on any environment.
+
+#### Core changes
+
+- **`package.json` `files`**: `["dist", "src/skill/SKILL.md"]` — ships the skill definition inside the published npm tarball so consumers receive it.
+- **`src/postinstall.ts` `installSkill()`** (new function): Resolves the packaged `SKILL.md` via `import.meta.url` (checks two candidate paths to cover both the npm-published layout `<pkgRoot>/src/skill/SKILL.md` relative to `dist/postinstall.js`, and the local dev layout), creates `~/.claude/skills/sincenety/` with `mkdirSync({recursive: true})`, and copies the file via `copyFileSync`. Wrapped in try/catch so any failure prints a warning but never aborts the CLI install itself.
+- **Call site**: `installSkill()` is invoked at the very top of `main()` — **before** the TTY check. This is important: the prior postinstall early-returned on non-TTY, which would have skipped skill registration on CI/Docker/non-interactive installs. Skill installation must happen unconditionally since it has no user input dependency.
+
+#### Verification
+
+- Non-TTY dry run: `node -e "process.stdin.isTTY=false; import('./dist/postinstall.js')"` prints `✓ Claude Code skill installed: /Users/.../SKILL.md` and the file is present with a readable size (10,444 bytes on the test machine).
+- TypeScript build clean (`tsc` — zero output).
+- Existing tests unaffected (no logic change to gatherer/summarizer/render paths).
+
+#### Migration note
+
+Users upgrading from v0.8.4 on the original dev machine will get the skill file overwritten (identical content). On fresh machines where `/sincenety` was missing, the command will appear in Claude Code after a restart.
+
+---
+
 ### v0.8.4 (2026-04-11) — Pipeline mode switch + auto weekly/monthly baseline + silent failure hardening
 
 #### Highlights

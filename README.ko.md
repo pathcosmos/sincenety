@@ -807,6 +807,33 @@ npx .                # 현재 디렉토리를 npx로 실행
 
 ## 개발 이력
 
+### v0.8.5 (2026-04-15) — `npm install -g` 시 Claude Code skill 자동 설치
+
+#### 하이라이트
+
+- **"다른 기기에서 `/sincenety`가 슬래시 명령 목록에 안 뜨는 문제" 수정**: v0.8.5 이전에는 `npm install -g sincenety`를 해도 CLI 바이너리만 설치될 뿐, Claude Code가 slash command를 인식하는 데 필요한 `~/.claude/skills/sincenety/SKILL.md` 파일은 **전혀 생성되지 않았음**. 원개발 기기에서만 과거 수동 복사로 존재했던 것이고, 신규 설치 기기에서는 `/sincenety`가 목록에 나타날 수 없는 구조였음.
+- **근본 원인 (두 개의 버그가 겹침)**:
+  1. `package.json`의 `files` 화이트리스트가 `["dist"]`뿐이어서, **`src/skill/SKILL.md`가 npm 패키지 tarball에 아예 포함되지 않음**. postinstall이 복사하려 해도 원본 파일 자체가 설치된 경로에 존재하지 않는 상태.
+  2. `src/postinstall.ts`에 **skill 복사 로직이 0줄**. grep으로 `skill|SKILL|.claude` 패턴 매치 0건 확인. 기존 postinstall은 D1/SMTP 셋업 위저드였고, 비-TTY 환경에서는 한 줄 안내만 출력하고 즉시 종료 — 어떤 환경에서도 skill 등록 단계가 실행된 적 없음.
+
+#### 주요 변경
+
+- **`package.json`의 `files`**: `["dist", "src/skill/SKILL.md"]` — 발행되는 npm tarball에 skill 정의 파일을 포함시켜 설치자에게 전달.
+- **`src/postinstall.ts`에 `installSkill()` 함수 신규 추가**: `import.meta.url` 기반으로 패키지 내 `SKILL.md` 경로를 2개 후보(npm 배포본 레이아웃 `<pkgRoot>/src/skill/SKILL.md`, 로컬 dev 레이아웃)로 탐색 → `~/.claude/skills/sincenety/`를 `mkdirSync({recursive: true})`로 생성 → `copyFileSync`로 복사. 전체 try/catch로 감싸서 복사 실패 시에도 CLI 설치 자체는 중단되지 않고 경고만 출력.
+- **호출 위치**: `main()` 최상단, **TTY 체크 이전**에 호출. 기존 postinstall은 비-TTY에서 즉시 return하는 구조였는데 이 위치에서 skill을 설치했다면 CI/Docker/스크립트 설치 시 skill 등록이 누락됐을 것. 사용자 입력이 필요 없는 작업이므로 TTY 여부와 무관하게 항상 실행되도록 배치.
+
+#### 검증
+
+- 비-TTY 드라이런: `node -e "process.stdin.isTTY=false; import('./dist/postinstall.js')"` → `✓ Claude Code skill installed: /Users/.../SKILL.md` 출력, 실제 파일 10,444 bytes 확인.
+- TypeScript 빌드 클린 (`tsc` 출력 0).
+- 기존 테스트 영향 없음 (gatherer/summarizer/render 경로 로직 무변경).
+
+#### 마이그레이션 참고
+
+v0.8.4에서 업그레이드하는 원개발 기기는 SKILL.md가 동일 내용으로 덮어써짐. `/sincenety`가 누락되어 있던 신규 기기에서는 설치 후 Claude Code 재시작 시 slash command 목록에 표시됨.
+
+---
+
 ### v0.1 (2026-04-07) — MVP
 
 - `history.jsonl` 기반 소급 갈무리

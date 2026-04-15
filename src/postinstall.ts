@@ -12,10 +12,39 @@
  */
 
 import { createInterface } from "node:readline";
+import { copyFileSync, existsSync, mkdirSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { readScope, promptScope } from "./config/scope.js";
 import { SqlJsAdapter } from "./storage/sqljs-adapter.js";
 import { runSetupWizard } from "./config/setup-wizard.js";
 import { autoSetupD1 } from "./cloud/d1-auto-setup.js";
+
+/**
+ * Claude Code skill 설치 — ~/.claude/skills/sincenety/SKILL.md로 복사.
+ * TTY 여부와 무관하게 항상 실행 (CI, Docker, 일반 설치 모두).
+ */
+function installSkill(): void {
+  try {
+    const here = dirname(fileURLToPath(import.meta.url));
+    // 후보: 패키지 루트의 src/skill/SKILL.md (npm 배포본) 또는 dist 옆 (개발용)
+    const candidates = [
+      resolve(here, "..", "src", "skill", "SKILL.md"),
+      resolve(here, "..", "..", "src", "skill", "SKILL.md"),
+    ];
+    const source = candidates.find((p) => existsSync(p));
+    if (!source) return;
+
+    const destDir = join(homedir(), ".claude", "skills", "sincenety");
+    const dest = join(destDir, "SKILL.md");
+    mkdirSync(destDir, { recursive: true });
+    copyFileSync(source, dest);
+    console.log(`  ✓ Claude Code skill installed: ${dest}`);
+  } catch (err) {
+    console.log(`  ⚠️  Skill install skipped: ${(err as Error).message}`);
+  }
+}
 
 function prompt(rl: ReturnType<typeof createInterface>, question: string): Promise<string> {
   return new Promise((resolve) => {
@@ -73,6 +102,9 @@ async function promptSecret(
 }
 
 async function main(): Promise<void> {
+  // Claude Code skill 설치는 TTY 여부와 무관하게 항상 실행
+  installSkill();
+
   // TTY 체크 — CI/Docker 등 비대화형 환경
   if (!process.stdin.isTTY) {
     console.log("  sincenety installed. Run 'sincenety config --setup' to configure.");
