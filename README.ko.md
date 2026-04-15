@@ -711,31 +711,222 @@ $ sincenety [--token T --key K --email E]
    ✅ sincenety complete — N sent, N skipped
 ```
 
-### DB 스키마 (v4)
+### 로컬 DB — 완전 명세
 
-**7개 테이블:**
+**파일**: `~/.sincenety/sincenety.db` (AES-256-GCM 암호화 blob, 파일 권한 `0600`, 디렉토리 권한 `0700`)
+**엔진**: `sql.js` — WASM 컴파일된 SQLite. native 의존성 0. DB 파일 전체가 open 시 메모리로 복호화되고, 메모리에서 변경된 뒤, close 시 재암호화되어 전체 파일이 다시 쓰임. 디스크에 점진적 INSERT는 없으며, 매 실행마다 암호화 blob 전체가 재작성됨.
+**사이드카**: `~/.sincenety/sincenety.salt` — 32바이트 암호학적 랜덤 salt. 최초 실행 시 **1회** 생성되어 PBKDF2 키 파생에 사용. 이 파일이 삭제되면 DB는 영구적으로 복호화 불가.
+**DB 확인**: `file ~/.sincenety/sincenety.db` 결과가 `data`(불투명)로 나와야 정상. `SQLite 3.x database`로 나오면 암호화가 깨진 것으로 평문 유출 상태.
 
-| 테이블 | 설명 |
-|--------|------|
-| `sessions` | 세션별 작업 기록 (22개 컬럼 — 토큰, 시간, 타이틀, 설명, 모델 등) |
-| `gather_reports` | 갈무리 리포트 (마크다운 + JSON, report_date, data_hash, updated_at) |
-| `daily_reports` | AI 요약 보고 (status, progress_label, data_hash; UNIQUE(report_date, report_type)) |
-| `checkpoints` | 갈무리 포인트 (마지막 처리 timestamp) |
-| `config` | 설정 (이메일, SMTP, provider 등) |
-| `vacations` | 휴가/공휴일 (date, type, source, label) |
-| `email_logs` | 이메일 발송 이력 |
+#### 로컬 DB를 유지하는 이유 (설계 근거)
 
-자동 마이그레이션: v1 → v2 → v3 → v4
+로컬 DB는 **파생 산출물(derived artifact)**. 원천(source of truth)은 언제나 `~/.claude/history.jsonl` + `~/.claude/projects/*.jsonl`이고, 원칙적으로는 매 실행마다 원천에서 전부 재구성 가능함. 그럼에도 로컬 DB를 유지하는 이유는, 단순 파일 재구성으로는 깔끔히 해결되지 않는 세 가지 역할 때문:
 
-DB 파일: `~/.sincenety/sincenety.db` (AES-256-GCM 암호화, 0600 권한)
+1. **멱등성(Idempotency) 경계** — `sincenety`는 하루에 여러 번 실행되는 패턴(크론 10:00, 수동 15:00, 자동 일 마감)을 전제로 설계됨. `sessions`의 복합 PK `(session_id, project)`와 `daily_reports`의 `UNIQUE(report_date, report_type)` 제약이 모든 재실행을 안전하게 만듦. DB가 없다면 (a) 매 실행마다 중복 리포트/중복 이메일이 생기거나 (b) 별도 dedupe 인덱스를 디스크에 직접 유지해야 함 — 후자는 결국 "제대로 안 만든 DB"에 불과.
 
-### 암호화 상세
+2. **발송 상태의 유일한 권위(authority)** — `daily_reports.emailed_at`이 "이 리포트가 이미 발송됐는가?"에 대한 단일 진실 공급원. `circle.ts`의 `autoSummarizeWeekly` / `autoSummarizeMonthly`에서 `if (existing && existing.emailedAt != null) return false`로 이미 이메일 나간 주간/월간 행이 덮어써지는 사고를 차단. `email_logs`는 append-only 감사 로그로서, 성공·실패 발송 전부가 subject/recipient/provider/error와 함께 기록됨.
 
-- **알고리즘**: AES-256-GCM (인증된 암호화)
-- **키 파생**: PBKDF2 (SHA-256, 100,000 iterations)
-- **키 소스**: `hostname + username + 랜덤 salt` (머신 바운드)
-- **Salt**: `~/.sincenety/sincenety.salt` (32바이트 랜덤, 설치 시 1회 생성, 0600 권한)
-- **파일 포맷**: `[4B magic "SNCT"][12B IV][ciphertext][16B auth tag]`
+3. **크로스 디바이스 머지의 피봇(pivot)** — `sync push`(발송 전)가 이 기기의 `daily_reports` 행들을 Cloudflare D1로 업로드하고, `sync pull`이 다른 기기들이 작성한 행을 내려받음. 이메일 렌더러의 머지 로직은 로컬 행과 pull한 행을 `(report_date, project_name)` 기준으로 조인하고 세션은 `(project_name, title_normalized)`로 dedupe. 로컬 DB가 없으면 "이 기기의 시점(view)"이란 개념 자체가 성립하지 않아 push 불가, 원격 행을 merge할 안정적 피봇도 없음.
+
+**DB에 저장하지 않는 것** (의도적 선택): 대화 전문, 코드 내용, 툴 호출 payload 전체. 메타데이터(카운트·타이밍·토큰·제목·설명·짧은 요약)만 저장하여, 만에 하나 키 파생이 유출돼도 피해 범위를 제한.
+
+**로컬 DB가 실제로 불필요한 경우**: 1기기만 사용 + 이메일 사용 안 함 + sync 사용 안 함 + `--json` 출력만 Claude Code에 파이프하는 사용자. 이 케이스에서는 DB가 비용만 추가. 그 외 (멀티 디바이스, 스케줄 발송, 주/월 롤업) 모든 사용자에게는 위 3가지 역할을 DB 없이 구현하려면 결국 처음부터 다시 만들어야 함.
+
+#### 저장 디렉토리 구조
+
+```
+~/.sincenety/
+├── sincenety.db       # 암호화된 SQLite blob (이 문서가 설명하는 대상)
+├── sincenety.salt     # 32바이트 PBKDF2 salt (0600)
+└── machine-id         # D1 행 귀속을 위한 안정적 기기 식별자
+```
+
+#### 암호화 엔벨롭(envelope)
+
+```
+[4B 매직 "SNCT"] [12B IV] [ciphertext (가변)] [16B GCM 인증 태그]
+```
+
+- **알고리즘**: AES-256-GCM (AEAD — 복호화 시 ciphertext 변조 검출)
+- **키 파생**: PBKDF2-SHA256, **100,000 iterations**, 32바이트 출력
+- **키 재료**: 기본값 `hostname ∥ username ∥ salt` (머신 바운드), 또는 사용자 지정 passphrase
+- **IV**: encrypt마다 랜덤 12바이트, 동일 키에서 재사용 금지
+- **인증 태그**: 16바이트, 복호화마다 검증 — 변조 시 예외 발생, **빈 DB로 조용히 폴백하지 않음**
+
+#### 스키마 버전 — v4 (현재)
+
+스키마 버전은 `config.value` 테이블의 `schema_version` 키에 저장. open 시 `applySchema()`가 현재 버전을 읽어 전진 전용(forward-only) 마이그레이션 실행:
+
+| From → To | 마이그레이션 요약 |
+|-----------|------------------|
+| `v1 → v2` | `ALTER TABLE sessions ADD COLUMN` × 14 (토큰, 타이밍 세부, 제목, 설명, 카테고리, 태그, 모델). `gather_reports`, `config` 테이블 신규. |
+| `v2 → v3` | `daily_reports` 테이블 신규 (`UNIQUE(report_date, report_type)` 제약의 AI 요약 저장소). |
+| `v3 → v4` | `gather_reports`에 `report_date`, `data_hash`, `updated_at` 추가. `daily_reports`에 `status`, `progress_label`, `data_hash` 추가. `vacations`, `email_logs` 테이블 신규. `idx_gather_report_date` 유니크 인덱스 추가. |
+
+마이그레이션은 `ALTER TABLE ADD COLUMN`만 사용(`DROP` 없음) — 신버전에서 쓴 DB를 구버전으로 내려도 깨지지 않도록. `schema_version`이 알 수 없는 값이면 "fresh install"로 간주하고 v1부터 재구축.
+
+#### 테이블별 컬럼 상세
+
+##### `sessions` (22컬럼) — 작업 세션 원천 레코드
+
+복합 PK `(id, project)`. 하나의 Claude Code 세션(하나의 `sessionId` × 하나의 프로젝트 디렉토리)이 한 행. 매 갈무리 실행마다 upsert.
+
+| 컬럼 | 타입 | 역할 |
+|------|------|------|
+| `id` | TEXT NOT NULL | Claude Code `sessionId` (UUID, `~/.claude/sessions/<id>.json`에서 추출) |
+| `project` | TEXT NOT NULL | 프로젝트 절대 경로 (세션 시작 시의 `cwd`) |
+| `project_name` | TEXT NOT NULL | `basename(project)` — 표시용 + 동일 프로젝트 머지 키 |
+| `started_at` | INTEGER NOT NULL | Unix epoch ms — 세션 첫 메시지 시각 |
+| `ended_at` | INTEGER NOT NULL | Unix epoch ms — 세션 마지막 메시지 시각 |
+| `duration_minutes` | REAL DEFAULT 0 | `(ended_at - started_at) / 60000`, 리포트 쿼리용 사전 계산값 |
+| `message_count` | INTEGER NOT NULL DEFAULT 0 | 전체 메시지 수 (user + assistant + tool) |
+| `user_message_count` | INTEGER DEFAULT 0 | 사용자 작성 메시지만 |
+| `assistant_message_count` | INTEGER DEFAULT 0 | 어시스턴트 응답만 |
+| `tool_call_count` | INTEGER DEFAULT 0 | 툴 호출 수 (Read, Edit, Bash, …) |
+| `input_tokens` | INTEGER DEFAULT 0 | 세션 누적 |
+| `output_tokens` | INTEGER DEFAULT 0 | 세션 누적 |
+| `cache_creation_tokens` | INTEGER DEFAULT 0 | 프롬프트 캐시 쓰기 |
+| `cache_read_tokens` | INTEGER DEFAULT 0 | 프롬프트 캐시 히트 |
+| `total_tokens` | INTEGER DEFAULT 0 | 위 4개 합계를 비정규화 저장 — 리포트 집계에 직접 사용 |
+| `title` | TEXT | AI 생성 또는 휴리스틱 제목 (≤80자) |
+| `summary` | TEXT | 짧은 요약 (1–2문장) |
+| `description` | TEXT | 세션에서 있었던 일의 상세 설명 |
+| `category` | TEXT | 분류 (feat/fix/docs/refactor/chore 등) |
+| `tags` | TEXT | 콤마 구분 키워드 태그 |
+| `model` | TEXT | 주 사용 모델 (예: `claude-opus-4-6`, `claude-sonnet-4-6`) |
+| `created_at` | INTEGER NOT NULL | DB 행 생성 ms — 세션 시간이 아님 |
+
+**인덱스**: `idx_sessions_started` (`started_at`), `idx_sessions_project` (`project`), `idx_sessions_category` (`category`).
+
+**쓰기 경로**: `gatherer.ts` → `INSERT … ON CONFLICT(id, project) DO UPDATE`로 세션별 UPSERT. 토큰 카운터는 **덮어쓰기**(누적 합산 아님) — 원천 JSONL이 정답.
+
+##### `gather_reports` (실행 raw 로그)
+
+`sincenety` 갈무리 실행의 raw 마크다운 + JSON 출력을 저장. 운영상 필수는 아니고, 감사 로그 및 `--json` 재현성 목적으로 유지.
+
+| 컬럼 | 타입 | 역할 |
+|------|------|------|
+| `id` | INTEGER PK AUTOINCREMENT | 대리 키 |
+| `gathered_at` | INTEGER NOT NULL | 실행 시각 (ms) |
+| `from_timestamp` | INTEGER NOT NULL | 갈무리 윈도우 시작 |
+| `to_timestamp` | INTEGER NOT NULL | 갈무리 윈도우 종료 |
+| `session_count` | INTEGER DEFAULT 0 | 이 실행의 세션 수 |
+| `total_messages` | INTEGER DEFAULT 0 | 메시지 총합 |
+| `total_input_tokens` | INTEGER DEFAULT 0 | |
+| `total_output_tokens` | INTEGER DEFAULT 0 | |
+| `report_markdown` | TEXT | 렌더된 터미널/마크다운 리포트 |
+| `report_json` | TEXT | 하류 `save-daily`에 전달되는 구조화 JSON |
+| `emailed_at` | INTEGER | Deprecated — `daily_reports.emailed_at`로 대체됨 |
+| `email_to` | TEXT | Deprecated |
+| `report_date` | TEXT *(v4)* | `YYYY-MM-DD` (윈도우 시작일) — 유니크 인덱스에 사용 |
+| `data_hash` | TEXT *(v4)* | `report_json`의 콘텐츠 해시; 입력이 같으면 해시 같음 → no-op 재작성 |
+| `updated_at` | INTEGER *(v4)* | 마지막 수정 시각 ms |
+
+**유니크 인덱스** `idx_gather_report_date` on `(report_date)` *(v4)* — 날짜당 raw 갈무리 리포트 1건, 재실행 시 같은 행을 갱신.
+
+##### `daily_reports` (AI 요약 — 일간/주간/월간)
+
+이메일로 나가는 콘텐츠와 크로스 디바이스 sync 교환의 권위적 원본. `(report_date, report_type)`마다 1행.
+
+| 컬럼 | 타입 | 역할 |
+|------|------|------|
+| `id` | INTEGER PK AUTOINCREMENT | |
+| `report_date` | TEXT NOT NULL | `YYYY-MM-DD` 앵커 (주간=월요일, 월간=1일) |
+| `report_type` | TEXT NOT NULL DEFAULT `'daily'` | `daily` / `weekly` / `monthly` 중 하나 |
+| `period_from` | INTEGER NOT NULL | 윈도우 시작 (ms) |
+| `period_to` | INTEGER NOT NULL | 윈도우 종료 (ms) |
+| `session_count` | INTEGER DEFAULT 0 | 윈도우 내 세션 수 집계 |
+| `total_messages` | INTEGER DEFAULT 0 | 집계 |
+| `total_tokens` | INTEGER DEFAULT 0 | 집계 |
+| `summary_json` | TEXT NOT NULL | 세션별 `SummaryEntry` 배열의 직렬화 (title, overview, actions, tokens, project_name, …). 이메일 렌더러가 이 필드를 읽음. |
+| `overview` | TEXT | 일/주/월 전체의 메타 요약 (2–4문장) |
+| `report_markdown` | TEXT | CLI `report`용 사전 렌더된 마크다운 |
+| `created_at` | INTEGER NOT NULL | 행 생성 ms |
+| `emailed_at` | INTEGER | **null 체크**(`!= null`)로 덮어쓰기 가능 여부 판단. non-null = 이미 발송됨 = auto-summary가 덮어쓰면 안 됨. |
+| `email_to` | TEXT | 발송된 리포트의 수신자 주소 |
+| `status` | TEXT DEFAULT `'in_progress'` *(v4)* | 윈도우가 아직 열려있으면 `in_progress`, 완전히 마감되면(전날/전주/전월) `finalized`. `finalizePreviousReports`가 상태 전환을 담당. |
+| `progress_label` | TEXT *(v4)* | 사람 읽기 용 상태 라벨 (예: "5/7 days of week") |
+| `data_hash` | TEXT *(v4)* | 변경 감지용 콘텐츠 해시 — D1 sync는 원격 행과 해시가 같으면 push 생략 |
+
+**제약**: `UNIQUE(report_date, report_type)` — 멱등성 보장의 핵심.
+**인덱스**: `idx_daily_date`, `idx_daily_type`.
+
+##### `checkpoints`
+
+갈무리 실행마다 마지막 처리한 timestamp를 기록. 실제로는 현재 사용하지 않음(갈무리가 언제나 오늘 00:00부터 진행, 마지막 체크포인트 이후 증분 아님) — 하위 호환성과 향후 "incremental since N" 모드 가능성을 위해 유지.
+
+| 컬럼 | 타입 | 역할 |
+|------|------|------|
+| `id` | INTEGER PK AUTOINCREMENT | |
+| `timestamp` | INTEGER NOT NULL | 마지막 처리 ms |
+| `created_at` | INTEGER NOT NULL | |
+
+##### `config` (key-value 설정)
+
+| 컬럼 | 타입 | 역할 |
+|------|------|------|
+| `key` | TEXT PK | 설정 이름 |
+| `value` | TEXT NOT NULL | 문자열 값 (필요 시 JSON 인코딩) |
+| `updated_at` | INTEGER NOT NULL | |
+
+알려진 키: `schema_version`, `email_to`, `smtp_user`, `smtp_pass`, `smtp_host`, `smtp_port`, `resend_key`, `d1_api_token`, `d1_account_id`, `d1_database_id`, `cf_ai_token`, `provider`, `pipeline_mode` (`smart` | `full`), `scope` (`global` | `project`).
+
+##### `vacations`
+
+| 컬럼 | 타입 | 역할 |
+|------|------|------|
+| `id` | INTEGER PK AUTOINCREMENT | |
+| `date` | TEXT NOT NULL UNIQUE | `YYYY-MM-DD` |
+| `type` | TEXT NOT NULL DEFAULT `'vacation'` | `vacation` / `holiday` / `sick` |
+| `source` | TEXT NOT NULL DEFAULT `'manual'` | `manual` / `auto` (세션 내용에서 키워드 감지) |
+| `label` | TEXT | 표시 라벨 (예: "설 연휴") |
+| `created_at` | INTEGER NOT NULL | |
+
+휴가 날짜는 `out` 실행 시 발송이 스킵됨. `date` 유니크 제약으로 중복 마킹 차단.
+
+##### `email_logs`
+
+모든 이메일 발송 시도의 append-only 감사 로그. 삭제하지 않음. 무한 증가하므로 필요 시 수동 절단.
+
+| 컬럼 | 타입 | 역할 |
+|------|------|------|
+| `id` | INTEGER PK AUTOINCREMENT | |
+| `sent_at` | INTEGER NOT NULL | 시도 시각 ms |
+| `report_type` | TEXT NOT NULL | `daily` / `weekly` / `monthly` |
+| `report_date` | TEXT NOT NULL | 리포트의 `YYYY-MM-DD` |
+| `period_from` | TEXT NOT NULL | 윈도우 시작 (ISO date) |
+| `period_to` | TEXT NOT NULL | 윈도우 종료 (ISO date) |
+| `recipient` | TEXT NOT NULL | 수신자 주소 |
+| `subject` | TEXT NOT NULL | 렌더된 제목 |
+| `body_html` | TEXT | 렌더된 HTML (실패 발송 시 null 가능) |
+| `body_text` | TEXT | 플레인텍스트 fallback 본문 |
+| `provider` | TEXT NOT NULL | `gmail-smtp` / `resend` / `gmail-mcp` |
+| `status` | TEXT NOT NULL DEFAULT `'sent'` | `sent` / `failed` |
+| `error_message` | TEXT | `status = 'failed'`일 때의 에러 상세 |
+
+**인덱스**: `idx_email_logs_sent` (`sent_at`), `idx_email_logs_report` (`report_date, report_type`).
+
+#### 읽기 경로 (DB가 실제로 어디에 쓰이나)
+
+| 명령 | 읽는 테이블 | 용도 |
+|------|------------|------|
+| `sincenety` (default) | `sessions`, `daily_reports`, `vacations`, `email_logs`, `config` | 풀 파이프라인 — 갈무리 → 요약 → 렌더 → 발송 |
+| `air` | `sessions`, `gather_reports` | Phase 1만 — 수집 & 저장 |
+| `circle` | `sessions`, `daily_reports` | Phase 2만 — AI 요약 + finalize |
+| `out` / `outd` / `outw` / `outm` | `daily_reports`, `email_logs`, `vacations`, `config` | Phase 3만 — 스마트 이메일 발송 |
+| `report --date` / `--week` / `--month` | `daily_reports` | 저장된 요약을 터미널로 렌더 |
+| `sync push` | `daily_reports`, `config` | 내 행을 D1으로 업로드 |
+| `sync pull` | `daily_reports`, `config` | 다른 기기의 행을 내려받아 머지 |
+| `config` | `config` | 설정 조회/수정 |
+| `vacation` | `vacations` | 휴가 날짜 CRUD |
+
+**현재 미지원(알려진 갭)**: `sessions.title/description` 전문 검색, 프로젝트 단위 집계 뷰, 타임라인/히트맵 쿼리. 데이터는 이미 저장 중이고, 읽기 경로만 없음 — 향후 작업 후보.
+
+#### 백업과 복구
+
+- **백업 대상 아님** — DB는 `~/.claude/`에서 파생된 것. 손실되면 `sincenety --since "2026-04-01"`로 원천에서 재구축.
+- **예외**: `daily_reports.summary_json` (AI 요약)과 `email_logs`는 `~/.claude/`만으로는 **복원 불가** — LLM 요약 재실행이 필요하고 토큰 비용이 들어감. 이 두 테이블만 유의미한 백업 대상. Cloudflare D1 sync가 `daily_reports`의 원격 백업 역할.
+- **재해 복구 절차**: `sincenety.db` + `sincenety.salt` 삭제 → 재설치 → 재실행. 과거 email_logs와 LLM 이전 요약은 유실, 세션 메타데이터만 `~/.claude/`에서 재구축됨.
 
 ---
 

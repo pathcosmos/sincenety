@@ -718,19 +718,222 @@ $ sincenety [--token T --key K --email E]
 - **Salt**: `~/.sincenety/sincenety.salt` (32-byte random, created once, mode 0600)
 - **File format**: `[4B magic "SNCT"][12B IV][ciphertext][16B auth tag]`
 
-### DB Schema (v4)
+### Local DB — Full Specification
 
-| Table | Description |
-|-------|-------------|
-| `sessions` | Per-session work records (22 columns — tokens, timing, title, description, model, etc.) |
-| `gather_reports` | Report per gather run (markdown + JSON, report_date, data_hash, updated_at) |
-| `daily_reports` | AI-generated summaries (status, progress_label, data_hash; UNIQUE(report_date, report_type)) |
-| `checkpoints` | Last processed timestamp |
-| `config` | Settings (email, SMTP, provider, etc.) |
-| `vacations` | Vacation/holiday dates (date, type, source, label) |
-| `email_logs` | Email delivery logs |
+**File**: `~/.sincenety/sincenety.db` (AES-256-GCM encrypted blob, file mode `0600`, dir mode `0700`)
+**Engine**: `sql.js` — WASM-compiled SQLite, zero native dependencies. The entire DB file is decrypted into memory on open, mutated in-place, re-encrypted on close. There is no incremental `INSERT` to disk — every run rewrites the whole encrypted blob.
+**Sidecar**: `~/.sincenety/sincenety.salt` — 32-byte cryptographically random salt, generated **once** on first run, used in PBKDF2 key derivation. If this file is deleted, the DB becomes permanently unreadable.
+**Opening the DB**: `file ~/.sincenety/sincenety.db` should report `data` (opaque). If it says `SQLite 3.x database`, encryption is broken and the DB has leaked plaintext.
 
-Auto-migration: v1 → v2 → v3 → v4
+#### Why we keep the local DB (design rationale)
+
+The local DB is a **derived artifact** — the source of truth is always `~/.claude/history.jsonl` + `~/.claude/projects/*.jsonl`. In principle everything could be reconstructed from those on every run. We keep the local DB anyway because it serves three jobs that pure file reconstruction cannot do cleanly:
+
+1. **Idempotency boundary** — `sincenety` is designed to be run multiple times per day (cron at 10:00, manual at 15:00, auto at end-of-day). The composite PK `(session_id, project)` on `sessions` and the `UNIQUE(report_date, report_type)` on `daily_reports` make every run safely re-runnable. Without the DB, either (a) each run produces a duplicate report row/email or (b) a bespoke dedupe index must be maintained on disk — which is just "a DB, worse".
+
+2. **Send-state authority** — `daily_reports.emailed_at` is the single source of truth for "was this report already delivered?" The guard `if (existing && existing.emailedAt != null) return false` in `autoSummarizeWeekly` / `autoSummarizeMonthly` (circle.ts) is what prevents the weekly/monthly baseline auto-generator from overwriting a row that has already gone out by email. `email_logs` is the append-only audit trail: every successful and failed send lands there with subject, recipient, provider, and error message.
+
+3. **Cross-device merge pivot** — `sync push` (pre-send) uploads this machine's `daily_reports` rows to Cloudflare D1; `sync pull` downloads rows authored by other machines. The merge in the email renderer joins local rows with pulled rows by `(report_date, project_name)` and dedupes sessions by `(project_name, title_normalized)`. Without a local DB, there is no "this machine's view" to push, and no stable pivot to merge remote rows into.
+
+**Not kept in the DB** (conscious choices): full conversation text, code content, tool call payloads. Only metadata (counts, timings, tokens, titles, descriptions, short summaries) is persisted, limiting blast radius if the key derivation ever leaks.
+
+**When the local DB is genuinely redundant**: a single-machine user who never emails, never syncs, and only reads `--json` stdout to pipe into Claude Code directly. For that user the DB adds cost without benefit. For everyone else (multi-device, scheduled delivery, week/month rollups), removing the DB would require rebuilding the three jobs above from scratch.
+
+#### Storage file layout
+
+```
+~/.sincenety/
+├── sincenety.db       # encrypted SQLite blob (this document)
+├── sincenety.salt     # 32-byte PBKDF2 salt (0600)
+└── machine-id         # stable machine identifier for D1 row attribution
+```
+
+#### Encryption envelope
+
+```
+[4B magic "SNCT"] [12B IV] [ciphertext (variable)] [16B GCM auth tag]
+```
+
+- **Algorithm**: AES-256-GCM (AEAD — ciphertext tampering is detected on decrypt)
+- **Key derivation**: PBKDF2-SHA256, **100,000 iterations**, 32-byte output
+- **Key material**: `hostname ∥ username ∥ salt` by default (machine-bound), or a user-supplied passphrase
+- **IV**: 12 random bytes per encrypt, never reused for the same key
+- **Auth tag**: 16 bytes, verified on every decrypt — tampering throws, does **not** silently fallback to empty DB
+
+#### Schema version — v4 (current)
+
+Schema version is stored in `config.value` under key `schema_version`. On open, `applySchema()` reads the current version and runs forward-only migrations:
+
+| From → To | Migration summary |
+|-----------|-------------------|
+| `v1 → v2` | `ALTER TABLE sessions ADD COLUMN` × 14 (tokens, timing breakdown, title, description, category, tags, model). Adds `gather_reports` and `config` tables. |
+| `v2 → v3` | Creates `daily_reports` table (AI summaries with `UNIQUE(report_date, report_type)`). |
+| `v3 → v4` | `gather_reports` gains `report_date`, `data_hash`, `updated_at`; `daily_reports` gains `status`, `progress_label`, `data_hash`; creates `vacations` and `email_logs` tables; adds `idx_gather_report_date` unique index. |
+
+Migrations use `ALTER TABLE ADD COLUMN` (never `DROP`) to keep downgrade-from-newer safe. Invalid or unknown `schema_version` values are treated as "fresh install" — the DB is rebuilt from v1 forward.
+
+#### Tables — per-column specification
+
+##### `sessions` (22 columns) — the core per-work-session record
+
+Composite primary key `(id, project)`. One row per Claude Code session (one `sessionId` on one project directory). Upserted every gather run.
+
+| Column | Type | Role |
+|--------|------|------|
+| `id` | TEXT NOT NULL | Claude Code `sessionId` (UUID from `~/.claude/sessions/<id>.json`) |
+| `project` | TEXT NOT NULL | Absolute project path (the `cwd` at session start) |
+| `project_name` | TEXT NOT NULL | `basename(project)` — for display and same-project merging |
+| `started_at` | INTEGER NOT NULL | Unix epoch ms — first message timestamp in the session |
+| `ended_at` | INTEGER NOT NULL | Unix epoch ms — last message timestamp |
+| `duration_minutes` | REAL DEFAULT 0 | `(ended_at - started_at) / 60000`, precomputed for report queries |
+| `message_count` | INTEGER NOT NULL DEFAULT 0 | Total message count (user + assistant + tool) |
+| `user_message_count` | INTEGER DEFAULT 0 | User-authored messages only |
+| `assistant_message_count` | INTEGER DEFAULT 0 | Assistant responses only |
+| `tool_call_count` | INTEGER DEFAULT 0 | Number of tool invocations (Read, Edit, Bash, …) |
+| `input_tokens` | INTEGER DEFAULT 0 | Sum across session |
+| `output_tokens` | INTEGER DEFAULT 0 | Sum across session |
+| `cache_creation_tokens` | INTEGER DEFAULT 0 | Prompt-cache writes |
+| `cache_read_tokens` | INTEGER DEFAULT 0 | Prompt-cache hits |
+| `total_tokens` | INTEGER DEFAULT 0 | Denormalized sum of the four above — used directly in report aggregation |
+| `title` | TEXT | AI-generated or heuristic session title (≤80 chars) |
+| `summary` | TEXT | Short session summary (1–2 sentences) |
+| `description` | TEXT | Longer description of what happened in this session |
+| `category` | TEXT | Optional classification (feat/fix/docs/refactor/chore) |
+| `tags` | TEXT | Comma-separated keyword tags |
+| `model` | TEXT | Dominant model used (e.g. `claude-opus-4-6`, `claude-sonnet-4-6`) |
+| `created_at` | INTEGER NOT NULL | DB row creation ms — not session time |
+
+**Indexes**: `idx_sessions_started` (`started_at`), `idx_sessions_project` (`project`), `idx_sessions_category` (`category`).
+
+**Write path**: `gatherer.ts` → UPSERT per session via `INSERT … ON CONFLICT(id, project) DO UPDATE`. Token counters are **overwritten** (not summed) — the source JSONL is canonical.
+
+##### `gather_reports` (raw run log)
+
+Captures the raw markdown + JSON output of a `sincenety` gather run. Not strictly required for operation — kept as an audit trail and for `--json` reproducibility.
+
+| Column | Type | Role |
+|--------|------|------|
+| `id` | INTEGER PK AUTOINCREMENT | Surrogate key |
+| `gathered_at` | INTEGER NOT NULL | Run timestamp (ms) |
+| `from_timestamp` | INTEGER NOT NULL | Start of gather window |
+| `to_timestamp` | INTEGER NOT NULL | End of gather window |
+| `session_count` | INTEGER DEFAULT 0 | Sessions in this run |
+| `total_messages` | INTEGER DEFAULT 0 | Aggregate message count |
+| `total_input_tokens` | INTEGER DEFAULT 0 | |
+| `total_output_tokens` | INTEGER DEFAULT 0 | |
+| `report_markdown` | TEXT | Rendered terminal/markdown report |
+| `report_json` | TEXT | Structured JSON for downstream `save-daily` |
+| `emailed_at` | INTEGER | Deprecated — superseded by `daily_reports.emailed_at` |
+| `email_to` | TEXT | Deprecated |
+| `report_date` | TEXT *(v4)* | `YYYY-MM-DD` of the gather window start — used by unique index |
+| `data_hash` | TEXT *(v4)* | Content hash of `report_json`; unchanged input → same hash → no-op rewrite |
+| `updated_at` | INTEGER *(v4)* | Last modification ms |
+
+**Unique index** `idx_gather_report_date` on `(report_date)` *(v4)* — one raw gather report per calendar day; reruns update the same row.
+
+##### `daily_reports` (AI-summarized reports — daily/weekly/monthly)
+
+The authoritative source for what gets emailed and what cross-device sync exchanges. One row per `(report_date, report_type)`.
+
+| Column | Type | Role |
+|--------|------|------|
+| `id` | INTEGER PK AUTOINCREMENT | |
+| `report_date` | TEXT NOT NULL | `YYYY-MM-DD` anchor (for weekly/monthly: Monday / 1st of month) |
+| `report_type` | TEXT NOT NULL DEFAULT `'daily'` | One of `daily` / `weekly` / `monthly` |
+| `period_from` | INTEGER NOT NULL | Window start (ms) |
+| `period_to` | INTEGER NOT NULL | Window end (ms) |
+| `session_count` | INTEGER DEFAULT 0 | Aggregated session count in window |
+| `total_messages` | INTEGER DEFAULT 0 | Aggregated |
+| `total_tokens` | INTEGER DEFAULT 0 | Aggregated |
+| `summary_json` | TEXT NOT NULL | Serialized array of per-session `SummaryEntry` objects (title, overview, actions, tokens, project_name, …). The email renderer reads this field. |
+| `overview` | TEXT | Day-level / week-level / month-level meta-summary (2–4 sentences) |
+| `report_markdown` | TEXT | Pre-rendered markdown for CLI `report` command |
+| `created_at` | INTEGER NOT NULL | Row creation ms |
+| `emailed_at` | INTEGER | **Null-checked** (`!= null`) to decide overwrite eligibility. A non-null value means this report has been delivered and must not be overwritten by auto-summary. |
+| `email_to` | TEXT | Recipient email address for the delivered report |
+| `status` | TEXT DEFAULT `'in_progress'` *(v4)* | `in_progress` while the window is still open, `finalized` when the period is fully closed (previous day / previous week / previous month). `finalizePreviousReports` flips the state. |
+| `progress_label` | TEXT *(v4)* | Human-readable state label (e.g. "5/7 days of week") |
+| `data_hash` | TEXT *(v4)* | Content hash for change detection — D1 sync skips pushes whose hash matches the remote row |
+
+**Constraint**: `UNIQUE(report_date, report_type)` — the core idempotency guarantee.
+**Indexes**: `idx_daily_date`, `idx_daily_type`.
+
+##### `checkpoints`
+
+Records the last processed timestamp per gather run. In practice deprecated because gathering always goes from today 00:00 forward (not incremental from last checkpoint), but kept for historical compatibility and potential future "incremental since N" mode.
+
+| Column | Type | Role |
+|--------|------|------|
+| `id` | INTEGER PK AUTOINCREMENT | |
+| `timestamp` | INTEGER NOT NULL | Last processed ms |
+| `created_at` | INTEGER NOT NULL | |
+
+##### `config` (key-value store)
+
+| Column | Type | Role |
+|--------|------|------|
+| `key` | TEXT PK | Setting name |
+| `value` | TEXT NOT NULL | String value (JSON-encoded when needed) |
+| `updated_at` | INTEGER NOT NULL | |
+
+Known keys: `schema_version`, `email_to`, `smtp_user`, `smtp_pass`, `smtp_host`, `smtp_port`, `resend_key`, `d1_api_token`, `d1_account_id`, `d1_database_id`, `cf_ai_token`, `provider`, `pipeline_mode` (`smart` | `full`), `scope` (`global` | `project`).
+
+##### `vacations`
+
+| Column | Type | Role |
+|--------|------|------|
+| `id` | INTEGER PK AUTOINCREMENT | |
+| `date` | TEXT NOT NULL UNIQUE | `YYYY-MM-DD` |
+| `type` | TEXT NOT NULL DEFAULT `'vacation'` | `vacation` / `holiday` / `sick` |
+| `source` | TEXT NOT NULL DEFAULT `'manual'` | `manual` / `auto` (keyword-detected from session content) |
+| `label` | TEXT | Display label (e.g. "설 연휴") |
+| `created_at` | INTEGER NOT NULL | |
+
+On vacation days, `out` short-circuits delivery (no email sent). The `UNIQUE` on `date` prevents double-marking.
+
+##### `email_logs`
+
+Append-only audit of every email delivery attempt. Never deleted; grows unbounded (manual truncation if needed).
+
+| Column | Type | Role |
+|--------|------|------|
+| `id` | INTEGER PK AUTOINCREMENT | |
+| `sent_at` | INTEGER NOT NULL | Attempt ms |
+| `report_type` | TEXT NOT NULL | `daily` / `weekly` / `monthly` |
+| `report_date` | TEXT NOT NULL | `YYYY-MM-DD` of the report |
+| `period_from` | TEXT NOT NULL | Window start (ISO date) |
+| `period_to` | TEXT NOT NULL | Window end (ISO date) |
+| `recipient` | TEXT NOT NULL | Delivered-to address |
+| `subject` | TEXT NOT NULL | Rendered subject line |
+| `body_html` | TEXT | Rendered HTML (nullable for failed sends) |
+| `body_text` | TEXT | Plain-text fallback body |
+| `provider` | TEXT NOT NULL | `gmail-smtp` / `resend` / `gmail-mcp` |
+| `status` | TEXT NOT NULL DEFAULT `'sent'` | `sent` / `failed` |
+| `error_message` | TEXT | Error detail when `status = 'failed'` |
+
+**Indexes**: `idx_email_logs_sent` (`sent_at`), `idx_email_logs_report` (`report_date, report_type`).
+
+#### Read path (what the DB is actually used for)
+
+| Command | Tables read | Purpose |
+|---------|-------------|---------|
+| `sincenety` (default) | `sessions`, `daily_reports`, `vacations`, `email_logs`, `config` | Full pipeline — gather → summarize → render → send |
+| `air` | `sessions`, `gather_reports` | Phase 1 only — collect & store |
+| `circle` | `sessions`, `daily_reports` | Phase 2 only — AI summarize + finalize |
+| `out` / `outd` / `outw` / `outm` | `daily_reports`, `email_logs`, `vacations`, `config` | Phase 3 only — smart email send |
+| `report --date` / `--week` / `--month` | `daily_reports` | Render stored summary to terminal |
+| `sync push` | `daily_reports`, `config` | Upload own rows to D1 |
+| `sync pull` | `daily_reports`, `config` | Download other machines' rows, merge |
+| `config` | `config` | Show/edit settings |
+| `vacation` | `vacations` | CRUD vacation days |
+
+**What is not supported (known gaps)**: full-text search over `sessions.title/description`, project-level aggregation view, timeline/heatmap queries. These are eligible candidates for future work — the data is already persisted, only read paths are missing.
+
+#### Backup & recovery
+
+- **Not a backup target** — the DB is derived from `~/.claude/`. If lost, rerun `sincenety --since "2026-04-01"` to rebuild from source.
+- **Exception**: `daily_reports.summary_json` (AI summaries) and `email_logs` are **not** reconstructible from `~/.claude/` alone — they require re-running the LLM summarization, which costs tokens. These two tables are the only meaningful backup targets. Cloud sync to Cloudflare D1 serves as remote backup for `daily_reports`.
+- **Disaster recovery**: delete `sincenety.db` + `sincenety.salt`, reinstall, rerun. Historical email_logs and pre-LLM summaries are lost; session metadata is rebuilt from `~/.claude/`.
 
 ---
 
