@@ -967,8 +967,17 @@ describe("autoSummarizeMonthly — boundary cases", () => {
 });
 
 describe("runCircle — summaryErrors propagation", () => {
+  // v0.8.6: runCircle은 AI provider 진입 가드를 통과해야 함.
+  // 테스트는 D1 자격증명을 config에 주입하여 "cloudflare" provider로 판정되게 한다.
+  async function seedAiConfig(a: StorageAdapter): Promise<void> {
+    await a.setConfig("d1_account_id", "test-account");
+    await a.setConfig("d1_api_token", "test-token");
+    await a.setConfig("ai_provider", "cloudflare");
+  }
+
   it("records weekly failure in summaryErrors without aborting", async () => {
     await createAdapter();
+    await seedAiConfig(adapter);
     // 빈 history 파일로 runAir이 side-effect 없이 끝나도록 함
     const emptyHistory = join(tmpDir, "empty-history.jsonl");
     await import("node:fs").then(({ writeFileSync }) => writeFileSync(emptyHistory, ""));
@@ -988,6 +997,7 @@ describe("runCircle — summaryErrors propagation", () => {
 
   it("records monthly failure independently of weekly", async () => {
     await createAdapter();
+    await seedAiConfig(adapter);
     const emptyHistory = join(tmpDir, "empty-history.jsonl");
     await import("node:fs").then(({ writeFileSync }) => writeFileSync(emptyHistory, ""));
 
@@ -1005,6 +1015,7 @@ describe("runCircle — summaryErrors propagation", () => {
 
   it("smart mode skips weekly/monthly entirely — no summaryErrors even if would fail", async () => {
     await createAdapter();
+    await seedAiConfig(adapter);
     const emptyHistory = join(tmpDir, "empty-history.jsonl");
     await import("node:fs").then(({ writeFileSync }) => writeFileSync(emptyHistory, ""));
 
@@ -1016,10 +1027,33 @@ describe("runCircle — summaryErrors propagation", () => {
 
   it("full mode with healthy storage returns empty summaryErrors", async () => {
     await createAdapter();
+    await seedAiConfig(adapter);
     const emptyHistory = join(tmpDir, "empty-history.jsonl");
     await import("node:fs").then(({ writeFileSync }) => writeFileSync(emptyHistory, ""));
 
     const result = await runCircle(adapter, { historyPath: emptyHistory, mode: "full" });
     expect(result.summaryErrors).toEqual([]);
+  });
+
+  it("AI provider 미설정 상태에서 runCircle이 throw — 전체 파이프라인 중단", async () => {
+    await createAdapter();
+    // 일부러 AI config 주입하지 않음 — provider = "heuristic"
+    const emptyHistory = join(tmpDir, "empty-history.jsonl");
+    await import("node:fs").then(({ writeFileSync }) => writeFileSync(emptyHistory, ""));
+
+    await expect(
+      runCircle(adapter, { historyPath: emptyHistory, mode: "full" }),
+    ).rejects.toThrow(/AI provider가 구성되지 않아/);
+  });
+
+  it("ai_provider=claude-code는 CLI 경로에서 throw — 슬래시 명령 전용임을 알림", async () => {
+    await createAdapter();
+    await adapter.setConfig("ai_provider", "claude-code");
+    const emptyHistory = join(tmpDir, "empty-history.jsonl");
+    await import("node:fs").then(({ writeFileSync }) => writeFileSync(emptyHistory, ""));
+
+    await expect(
+      runCircle(adapter, { historyPath: emptyHistory, mode: "full" }),
+    ).rejects.toThrow(/\/sincenety 슬래시 명령에서만/);
   });
 });

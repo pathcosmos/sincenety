@@ -35,7 +35,7 @@ describe("cf-ai", () => {
     expect(result!.flow).toBe("A → B → C");
   });
 
-  it("should handle API errors gracefully", async () => {
+  it("v0.8.6: API 에러는 throw로 전파됨 (silent null 반환 금지)", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
       ok: false,
       status: 401,
@@ -43,12 +43,13 @@ describe("cf-ai", () => {
     }));
 
     const { summarizeSession } = await import("../src/cloud/cf-ai.js");
-    const result = await summarizeSession(
-      { accountId: "acc", apiToken: "bad" },
-      "test",
-      [{ userInput: "x", assistantOutput: "y" }],
-    );
-    expect(result).toBeNull();
+    await expect(
+      summarizeSession(
+        { accountId: "acc", apiToken: "bad" },
+        "test",
+        [{ userInput: "x", assistantOutput: "y" }],
+      ),
+    ).rejects.toThrow(/Workers AI HTTP 401/);
   });
 
   it("should handle markdown-wrapped JSON", async () => {

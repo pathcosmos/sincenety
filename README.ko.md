@@ -998,6 +998,75 @@ npx .                # 현재 디렉토리를 npx로 실행
 
 ## 개발 이력
 
+### v0.8.6 (2026-04-16) — 휴리스틱 요약 fallback 완전 제거 + AI 필수 파이프라인 가드 + 프롬프트 강화
+
+#### 하이라이트
+
+- **휴리스틱 요약 fallback 완전 제거.** `src/core/summarizer.ts`의 `summarizeHeuristic` 함수(정규식으로 입력/출력 문장을 잘라 이어붙이는 로직)를 **삭제**. "AI 요약이 안 돌고 입력 텍스트가 그대로 정리되어 나간다"는 오랜 증상의 근본 원인이었음. AI provider가 사용 불가일 때 silent로 호출되어 사용자 프롬프트를 베낀 가짜 요약을 만들고 있었음.
+- **파이프라인 전역 AI 필수 가드.** `assertAiReadyForCliPipeline()` 신규 가드가 `runCircle` 진입과 `autoSummarize` 진입에서 호출됨. `ai_provider`가 유효한 자격증명을 가진 `cloudflare` 또는 `anthropic`이 아니면 즉시 명확한 한글 에러 + `process.exit(1)`(cron 감지 가능)로 sincenety 전체 프로세스 중단. **이메일 발송 없음, 거짓 요약 저장 없음.**
+- **`ai_provider=claude-code`는 CLI에서 금지.** 이 값은 `/sincenety` 슬래시 명령(Claude Code가 외부에서 직접 요약을 만들어 `circle --save`로 저장하는 흐름) 안에서만 유효. CLI/cron으로 `sincenety` 직접 실행 시 슬래시 명령 전용임을 알리는 메시지와 함께 throw.
+- **양 AI 경로 프롬프트 강화.** Cloudflare Workers AI와 Anthropic 프롬프트 모두 사용자 발화의 출력 등장을 명시적으로 금지. 프롬프트 구조를 "사용자 의도(맥락 전용)"와 "어시스턴트 수행/산출물(요약 대상)"로 분리하고, 무엇이 만들어지고 변경됐는지를 3인칭 관찰자 시점으로 기술하도록 지시.
+
+#### "AI 요약 안 돌던" 증상의 근본 원인
+
+v0.8.6 이전 `src/core/summarizer.ts:279`의 분기는 `cloudflare`와 `anthropic` provider만 처리하고 `claude-code`와 미설정 상태에선 **휴리스틱으로 fallthrough**. 거기에 `summarizer.ts:141`의 `catch {}`가 Anthropic API 모든 에러를 silent로 삼킴 — provider 설정 오류, 네트워크 에러, 인증 실패 어느 것이든 조용히 정규식 기반 입력-텍스트 echo로 격하됨. 사용자 입장: "AI 설정한 것 같은데 이메일은 내가 입력한 글이 정리만 된 것처럼 보임." 실제로 그게 일어나고 있었음 — 정규식이 `userInput`의 첫 문장들을 잘라내 화살표로 이어 붙이고 있었음.
+
+두 번째 오염 경로: `src/core/gatherer.ts`도 매 갈무리마다 `summarizeSessions`를 호출해 세션 title을 채우고 있었음. 실제 요약은 이후 `autoSummarize`에서 따로 일어나므로 이 호출은 불필요했고 휴리스틱을 한 번 더 흘려넣고 있었음. 이 호출도 제거.
+
+#### 주요 변경
+
+- **`src/core/summarizer.ts`**:
+  - **삭제**: `summarizeHeuristic()` 함수(정규식 추출 로직 약 90줄).
+  - **신규**: `AiUnavailableError` 예외 클래스 — 호출자가 잡아 파이프라인을 중단할 수 있게.
+  - **`summarizeSession()`** 반환 타입을 `Promise<SessionSummary>`(non-nullable)로 변경, 어떤 실패에서도 throw.
+  - **`summarizeWithClaude`의 silent `catch {}` 제거** — Anthropic SDK 에러(인증, rate limit, 네트워크) 그대로 전파. 빈 응답·JSON 파싱 실패도 동일.
+  - **`claude-code` provider는 명시적으로 throw** — 슬래시 명령 전용임을 메시지로 안내.
+  - **Heuristic / 미설정 provider도 명시적으로 throw** — 설정 가이드 hint 포함.
+  - 프롬프트 구조 변경: 턴 포맷이 `[턴 N] 사용자 의도(맥락): ... / 어시스턴트 수행/산출물: ...` — 의도와 행위를 분리. 출력 규칙이 사용자 발화 인용 금지, 3인칭 시점을 명시.
+
+- **`src/core/ai-provider.ts`**:
+  - **신규**: `assertAiReadyForCliPipeline(storage)` — 파이프라인 진입 체크의 단일 진실 공급원. `claude-code`(CLI 컨텍스트), `heuristic`(provider 없음), 자격증명 없는 `cloudflare`/`anthropic`을 명확히 거부.
+
+- **`src/core/circle.ts:autoSummarize`**:
+  - 진입 시 가드 호출 — AI 준비 안 됐으면 어떤 DB 읽기도 시작하기 전에 throw.
+  - 세션별 AI 실패가 더 이상 날짜 단위 `try/catch`에 묻히지 않음. catch 블록 자체를 제거. AI 실패가 호출자로 전파되어 그 `autoSummarize` 호출 전체가 중단됨. **부분적 요약은 절대 `daily_reports`에 쓰지 않음.**
+  - Cloudflare `cfSummarize`의 null 반환도 실패로 간주하여 throw 승격(이전: silent skip).
+  - 크로스 디바이스 D1 pull의 `try/catch`는 유지(네트워크 flakiness는 예상되고 요약 정확성과 직교적), 다만 silent `catch` 블록들이 이제 실제 에러 메시지를 경고로 출력.
+
+- **`src/core/circle.ts:runCircle`**:
+  - `autoSummarize` 호출 직전에 `assertAiReadyForCliPipeline(storage)` 호출(CLI 경로 한정 — `--json`/`--save`/`--skipAutoSummarize` 경로는 슬래시 명령 흐름 전용이라 우회).
+
+- **`src/core/gatherer.ts`**:
+  - `summarizeSessions` 호출 **제거**. `gather_reports` 행은 raw 세션 메타데이터만 저장(XML 태그 제거된 `s.title ?? s.summary`). 휴리스틱이 채우던 `wrapUp` 필드도 제거. AI 생성 wrapUp은 `daily_reports.summary_json`에서만 살아있도록 정리.
+
+- **`src/cloud/cf-ai.ts`**:
+  - 프롬프트 재작성: `summarizer.ts`와 동일하게 의도/행위 분리, 시스템 프롬프트가 5개 출력 규칙 명시(사용자 인용 금지, 3인칭, 의도+산출물 통합, 인사·중간보고 무시, JSON만 출력).
+  - **silent `catch { return null }` 제거** — HTTP 에러, content 누락, JSON 파싱 실패 전부 설명적 메시지로 throw하여 `circle.autoSummarize`가 파이프라인을 중단할 수 있게.
+
+#### 테스트 변경
+
+- **`tests/cf-ai.test.ts`**: "should handle API errors gracefully" 테스트 이름 변경 + 재작성 — 이제 `rejects.toThrow(/Workers AI HTTP 401/)`. 새 계약 반영: silent null 반환 금지.
+- **`tests/circle.test.ts`**: 기존 `runCircle — summaryErrors propagation` 4개 테스트가 가드를 통과하도록 `ai_provider=cloudflare` + 더미 D1 자격증명 시딩 추가. 신규 2개 테스트:
+  - `AI provider 미설정 상태에서 runCircle이 throw — 전체 파이프라인 중단`
+  - `ai_provider=claude-code는 CLI 경로에서 throw — 슬래시 명령 전용임을 알림`
+- **173/173 테스트 통과** (이전 171 → 가드 테스트 +2, 제거 0).
+
+#### 검증
+
+1. **사용자 증상의 포렌식 재현**: `daily_reports`의 2026-04-14 행 검사 결과 `topic = "오늘 cli 환경에서 실행한거 skip 되었던데, 내 홈 위치 실행했어(~/), 왜 sk…"`, `flow = "오늘 cli 환경에서 실행한거 skip 되었던데, 내… → cli 에서 어제 날짜기준 정리하려면 어떻게 명령어 …"` — 휴리스틱이 사용자 프롬프트 텍스트를 그대로 echo한 것을 그대로 확인. 근본 원인 확정.
+2. **Cloudflare AI smoke 테스트**(격리): 위에서 echo됐던 사용자 입력 그대로를 직접 `summarizeSession`에 넣어 호출 → `topic: "skill 자동 호출 문제 해결"`, outcome은 실제 코드 변경(파일 경로, 버전 범프, 설치 로직)을 3인칭으로 기술. 사용자 프롬프트 문자 0건 출현.
+3. **가드 테스트**(격리): `ai_provider=claude-code`로 `summarizeSession` 호출 → `AiUnavailableError`가 슬래시 명령 안내 메시지와 함께 throw 확인.
+4. **E2E CLI 테스트**: `node dist/cli.js out`을 `ai_provider=claude-code` 상태로 실행 → 명확한 한글 에러 메시지 출력, 이메일 0건 발송, exit code 1(직접 확인).
+5. **이전 행 강제 재요약**: 2026-04-14(6 세션, 머지 후 5개)와 2026-04-15(1 세션)를 `autoSummarize`로 직접 재생성. 모든 세션 topic/flow가 행위 명사구로 정리되어 사용자 프롬프트 흔적 0. overview는 그날의 작업을 통합적으로 요약.
+
+#### 마이그레이션 영향
+
+- **`ai_provider=claude-code`인데 cron/CLI에서 `sincenety` 실행하던 사용자**: cron이 exit 1 + 명확한 메시지로 실패하기 시작함. `sincenety config --ai-provider cloudflare`(기존 D1 토큰 사용) 또는 `sincenety config --ai-provider anthropic` + `ANTHROPIC_API_KEY` 환경변수 설정으로 전환.
+- **AI 미설정 사용자**: 동일 — 휴리스틱 가짜 이메일 보내느니 파이프라인이 거부. cloudflare 또는 anthropic 설정.
+- **휴리스틱이 만든 기존 `daily_reports` 행**: 자동 교정되지 않음(`emailedAt != null` 가드가 덮어쓰기를 막음). 수동 재생성 절차: 해당 행의 `summaryJson`과 `emailedAt`을 NULL로 초기화한 뒤 `circle` 재실행 또는 `autoSummarize` 직접 호출.
+
+---
+
 ### v0.8.5 (2026-04-15) — `npm install -g` 시 Claude Code skill 자동 설치
 
 #### 하이라이트

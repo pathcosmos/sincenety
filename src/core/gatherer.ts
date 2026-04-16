@@ -95,9 +95,10 @@ async function buildGatherReport(
     (s, g) => s + (g.outputTokens ?? 0), 0
   );
 
-  // 세션별 AI/헬리스틱 요약 생성
-  const { summarizeSessions } = await import("./summarizer.js");
-  const summaries = await summarizeSessions(sessions, storage);
+  // v0.8.6: gatherer는 더 이상 요약을 만들지 않음.
+  // 실제 AI 요약은 circle.autoSummarize에서 중앙집중적으로 수행되며,
+  // raw gather_reports에는 세션 원본 메타데이터만 저장한다.
+  // (이전에는 이 호출이 휴리스틱 fallback을 거쳐 가짜 요약을 title에 주입했었음.)
 
   return {
     gatheredAt: toTimestamp,
@@ -118,8 +119,8 @@ async function buildGatherReport(
           significance: "",
         }));
 
-        const summary = summaries.get(s.sessionId);
-        const cleanTitle = summary?.topic || stripTags(s.title ?? s.summary);
+        // raw 세션 메타데이터만 저장 — AI 요약은 circle.autoSummarize가 수행
+        const cleanTitle = stripTags(s.title ?? s.summary);
         const cleanDesc = stripTags(s.description ?? "");
 
         return {
@@ -139,11 +140,7 @@ async function buildGatherReport(
           category: s.category ?? s.projectName,
           description: cleanDesc,
           actions,
-          wrapUp: summary ? {
-            outcome: summary.outcome,
-            significance: summary.significance,
-            flow: summary.flow,
-          } : undefined,
+          // wrapUp은 circle.autoSummarize에서 daily_reports.summary_json으로 별도 저장됨
         };
       })
     ),

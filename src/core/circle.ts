@@ -607,9 +607,13 @@ export async function autoSummarizeMonthly(
 
 /**
  * 변경된 날짜의 세션을 자동 요약.
- * 모든 ai_provider에서 동작 — cloudflare는 Workers AI, 그 외는 heuristic/API.
- * claude-code 모드에서도 heuristic 요약을 baseline으로 저장하여
- * SKILL.md circle --save로 Claude Code가 덮어쓰기 전까지 최소한의 요약을 보장.
+ *
+ * v0.8.6부터 휴리스틱 fallback 완전 제거. AI provider가
+ * cloudflare 또는 anthropic으로 유효하게 구성되지 않으면
+ * `assertAiReadyForCliPipeline`에서 즉시 throw → sincenety 전체 파이프라인 중단.
+ *
+ * 세션별 요약이 실패하면 그 날짜의 저장을 전체 취소하고 throw 전파.
+ * "부분적으로 실패한 요약"을 절대 DB에 쓰지 않음.
  *
  * 크로스 디바이스: D1에서 다른 기기의 요약을 pull하여 통합 요약 생성.
  */
@@ -617,8 +621,13 @@ export async function autoSummarize(
   storage: StorageAdapter,
   changedDates: string[],
 ): Promise<number> {
-  const { resolveAiProvider, loadAiProviderConfig } = await import("./ai-provider.js");
+  const { resolveAiProvider, loadAiProviderConfig, assertAiReadyForCliPipeline } =
+    await import("./ai-provider.js");
   const { summarizeSession: summarize } = await import("./summarizer.js");
+
+  // 진입 가드 — AI가 없으면 여기서 throw, 호출자(runCircle)가 전파.
+  await assertAiReadyForCliPipeline(storage);
+
   const provider = await resolveAiProvider(storage);
 
   // Cloudflare Workers AI 설정 (cloudflare일 때만)
@@ -658,111 +667,112 @@ export async function autoSummarize(
     const report = await storage.getGatherReportByDate(date);
     if (!report?.reportJson) continue;
 
-    try {
-      const sessions = JSON.parse(report.reportJson);
-      const summaries: Array<{
-        sessionId: string;
-        projectName: string;
-        topic: string;
-        outcome: string;
-        flow: string;
-        significance: string;
-        nextSteps?: string;
-      }> = [];
+    const sessions = JSON.parse(report.reportJson);
+    const summaries: Array<{
+      sessionId: string;
+      projectName: string;
+      topic: string;
+      outcome: string;
+      flow: string;
+      significance: string;
+      nextSteps?: string;
+    }> = [];
 
-      for (const s of sessions) {
-        const turns = s.conversationTurns ?? [];
+    for (const s of sessions) {
+      const turns = s.conversationTurns ?? [];
 
-        if (cfConfig && cfSummarize && turns.length > 0) {
-          // Cloudflare Workers AI 경로
-          const summary = await cfSummarize(cfConfig, s.projectName ?? "", turns);
-          if (summary) {
-            summaries.push({ sessionId: s.sessionId, projectName: s.projectName, ...summary });
-            continue;
-          }
+      if (cfConfig && cfSummarize && turns.length > 0) {
+        // Cloudflare Workers AI 경로 — null 반환 시 AI 실패로 간주하고 throw
+        const summary = await cfSummarize(cfConfig, s.projectName ?? "", turns);
+        if (!summary) {
+          throw new Error(
+            `Workers AI 요약 실패 (date=${date}, session=${s.sessionId}, project=${s.projectName ?? "?"}). ` +
+              "휴리스틱 fallback은 v0.8.6부터 제거됐습니다 — 부분적으로 실패한 요약을 DB에 쓰지 않습니다.",
+          );
         }
-
-        // 전 provider 공통: summarizer.ts 경유 (anthropic API 또는 heuristic)
-        const fallback = await summarize(
-          { ...s, conversationTurns: turns } as any,
-          storage,
-        );
-        summaries.push({
-          sessionId: s.sessionId,
-          projectName: s.projectName ?? "",
-          ...fallback,
-        });
+        summaries.push({ sessionId: s.sessionId, projectName: s.projectName, ...summary });
+        continue;
       }
 
-      // 크로스 디바이스: 다른 기기의 이미 요약된 세션을 pull하여 머지
-      if (d1Client && machineId) {
-        try {
-          const { pullCrossDeviceReports } = await import("../cloud/sync.js");
-          const remoteReports = await pullCrossDeviceReports(d1Client, machineId, date, "daily");
-          const localIds = new Set(summaries.map((s) => s.sessionId));
-          let remoteCount = 0;
-          for (const remote of remoteReports) {
-            try {
-              const remoteSessions = JSON.parse(remote.summaryJson || "[]");
-              for (const rs of remoteSessions) {
-                const rsId = rs.sessionId ?? "";
-                if (rsId && !localIds.has(rsId)) {
-                  summaries.push({
-                    sessionId: rsId,
-                    projectName: rs.projectName ?? "",
-                    topic: rs.topic ?? "",
-                    outcome: rs.outcome ?? "",
-                    flow: rs.flow ?? "",
-                    significance: rs.significance ?? "",
-                    nextSteps: rs.nextSteps ?? "",
-                  });
-                  localIds.add(rsId);
-                  remoteCount++;
-                }
+      // Anthropic 경로: summarizer.ts가 실패 시 throw (더 이상 휴리스틱 fallback 없음)
+      const result = await summarize(
+        { ...s, conversationTurns: turns } as any,
+        storage,
+      );
+      summaries.push({
+        sessionId: s.sessionId,
+        projectName: s.projectName ?? "",
+        ...result,
+      });
+    }
+
+    // 크로스 디바이스: 다른 기기의 이미 요약된 세션을 pull하여 머지
+    // (네트워크/D1 flaky는 무시해도 로컬 요약 품질에 영향 없으므로 try/catch 유지)
+    if (d1Client && machineId) {
+      try {
+        const { pullCrossDeviceReports } = await import("../cloud/sync.js");
+        const remoteReports = await pullCrossDeviceReports(d1Client, machineId, date, "daily");
+        const localIds = new Set(summaries.map((s) => s.sessionId));
+        let remoteCount = 0;
+        for (const remote of remoteReports) {
+          try {
+            const remoteSessions = JSON.parse(remote.summaryJson || "[]");
+            for (const rs of remoteSessions) {
+              const rsId = rs.sessionId ?? "";
+              if (rsId && !localIds.has(rsId)) {
+                summaries.push({
+                  sessionId: rsId,
+                  projectName: rs.projectName ?? "",
+                  topic: rs.topic ?? "",
+                  outcome: rs.outcome ?? "",
+                  flow: rs.flow ?? "",
+                  significance: rs.significance ?? "",
+                  nextSteps: rs.nextSteps ?? "",
+                });
+                localIds.add(rsId);
+                remoteCount++;
               }
-            } catch {
-              // 개별 리모트 파싱 실패 무시
             }
+          } catch (err) {
+            console.warn(`  ⚠️ ${date}: remote 요약 JSON 파싱 실패 — ${err instanceof Error ? err.message : String(err)}`);
           }
-          if (remoteCount > 0) {
-            console.error(`  🔗 ${date}: ${remoteCount} sessions merged from other devices`);
-          }
-        } catch {
-          // D1 pull 실패 시 로컬 전용
         }
-      }
-
-      // 동일 제목 세션 통합 (개별 요약 → 재요약)
-      const mergedSummaries = mergeSummariesByTitle(summaries);
-      const mergeCount = summaries.length - mergedSummaries.length;
-      if (mergeCount > 0) {
-        console.log(`  🔗 ${date}: ${summaries.length} sessions → ${mergedSummaries.length} (${mergeCount} merged)`);
-      }
-
-      if (mergedSummaries.length > 0) {
-        let overview: string | null = null;
-        if (cfConfig && cfOverview) {
-          overview = await cfOverview(cfConfig, date, mergedSummaries as any);
-        } else {
-          // heuristic overview: 세션 topic 요약
-          const topics = mergedSummaries.map((s) => s.topic).filter(Boolean);
-          overview = topics.length > 0
-            ? `${date} 작업: ${topics.join(", ")}`
-            : null;
+        if (remoteCount > 0) {
+          console.error(`  🔗 ${date}: ${remoteCount} sessions merged from other devices`);
         }
-
-        await circleSave(storage, {
-          date,
-          type: "daily",
-          overview: overview ?? undefined,
-          sessions: mergedSummaries,
-        });
-        summarized++;
-        const providerLabel = cfConfig ? "Cloudflare AI" : provider;
-        console.log(`  🤖 ${date} summary done (${mergedSummaries.length} sessions, ${providerLabel})`);
+      } catch (err) {
+        console.warn(`  ⚠️ ${date}: D1 pull 실패 (로컬 요약만 사용) — ${err instanceof Error ? err.message : String(err)}`);
       }
-    } catch (err) {
-      console.warn(`  ⚠️ ${date} summary failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    // 동일 제목 세션 통합 (개별 요약 → 재요약)
+    const mergedSummaries = mergeSummariesByTitle(summaries);
+    const mergeCount = summaries.length - mergedSummaries.length;
+    if (mergeCount > 0) {
+      console.log(`  🔗 ${date}: ${summaries.length} sessions → ${mergedSummaries.length} (${mergeCount} merged)`);
+    }
+
+    if (mergedSummaries.length > 0) {
+      let overview: string | null = null;
+      if (cfConfig && cfOverview) {
+        // Workers AI overview 실패 시 null 반환 — null이면 세션 topic 조립으로 폴백
+        overview = await cfOverview(cfConfig, date, mergedSummaries as any);
+      }
+      // overview 없으면 세션 topic만 조합 (AI 요약 결과를 조합한 것이므로 휴리스틱 아님)
+      if (!overview) {
+        const topics = mergedSummaries.map((s) => s.topic).filter(Boolean);
+        overview = topics.length > 0 ? `${date} 작업: ${topics.join(", ")}` : null;
+      }
+
+      await circleSave(storage, {
+        date,
+        type: "daily",
+        overview: overview ?? undefined,
+        sessions: mergedSummaries,
+      });
+      summarized++;
+      const providerLabel = cfConfig ? "Cloudflare AI" : provider;
+      console.log(`  🤖 ${date} summary done (${mergedSummaries.length} sessions, ${providerLabel})`);
     }
   }
 
@@ -794,6 +804,10 @@ export async function runCircle(
 
   // Auto-summarize (when not using SKILL.md --json/--save flow)
   if (!options?.json && !options?.save && !options?.skipAutoSummarize) {
+    // AI 진입 가드 — provider 설정 불량이면 즉시 throw하여 sincenety 파이프라인 전체 중단
+    const { assertAiReadyForCliPipeline } = await import("./ai-provider.js");
+    await assertAiReadyForCliPipeline(storage);
+
     const summarized = await autoSummarize(storage, airResult.changedDates);
     if (summarized > 0) {
       console.log(`  🤖 ${summarized} day(s) summarized`);

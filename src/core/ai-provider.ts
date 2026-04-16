@@ -65,3 +65,41 @@ export async function resolveAiProvider(
   const config = await loadAiProviderConfig(storage);
   return detectAiProvider(config);
 }
+
+/**
+ * CLI/cron 경로에서 AI 요약이 반드시 필요한 파이프라인 진입 시 호출되는 가드.
+ * 이 가드를 통과하지 못하면 sincenety 전체 실행을 중단해야 함.
+ *
+ * - `cloudflare` / `anthropic` (자격 증명 존재) → 통과
+ * - `claude-code` → 중단 (이 provider는 /sincenety 슬래시 명령에서만 유효)
+ * - 설정 없음(heuristic) → 중단
+ *
+ * @throws Error with clear remediation message
+ */
+export async function assertAiReadyForCliPipeline(
+  storage: StorageAdapter,
+): Promise<void> {
+  const config = await loadAiProviderConfig(storage);
+  const provider = detectAiProvider(config);
+
+  if (provider === "cloudflare" || provider === "anthropic") return;
+
+  const hint =
+    "설정 방법:\n" +
+    "  - Cloudflare: `sincenety config` 재실행 후 D1 토큰 입력\n" +
+    "  - Anthropic:  `sincenety config --ai-provider anthropic` + ANTHROPIC_API_KEY 환경변수";
+
+  if (provider === "claude-code") {
+    throw new Error(
+      "ai_provider=claude-code는 /sincenety 슬래시 명령에서만 AI 요약이 가능합니다. " +
+        "CLI 또는 cron에서 직접 `sincenety`를 실행하려면 Cloudflare 또는 Anthropic을 설정하세요.\n\n" +
+        hint,
+    );
+  }
+
+  throw new Error(
+    "AI provider가 구성되지 않아 요약을 생성할 수 없습니다. " +
+      "sincenety는 요약 품질 보장을 위해 AI 없이 파이프라인을 실행하지 않습니다.\n\n" +
+      hint,
+  );
+}

@@ -967,6 +967,75 @@ node dist/cli.js     # Direct execution
 
 ## Changelog
 
+### v0.8.6 (2026-04-16) — Heuristic summary fallback removed + AI-required pipeline guard + prompt hardening
+
+#### Highlights
+
+- **Heuristic summary fallback completely removed.** The `summarizeHeuristic` function in `src/core/summarizer.ts` (the regex-based "extract sentences from input/output and concatenate them") is **deleted**. It was the root cause of the long-standing complaint that "AI summary doesn't run; the output looks like my input text rewritten." The heuristic was a silent fallback that ran whenever the AI provider was unavailable, producing summaries that mirrored the user's prompt text instead of actual work performed.
+- **Pipeline-wide AI-required guard.** A new `assertAiReadyForCliPipeline()` guard runs at the entry of `runCircle` (and again at `autoSummarize`). If `ai_provider` is not `cloudflare` or `anthropic` with valid credentials, the entire `sincenety` process aborts immediately with a clear remediation message and `process.exit(1)` (cron-detectable). **No email is sent, no false summary is written.**
+- **`ai_provider=claude-code` is now CLI-forbidden.** This provider value is only valid inside the `/sincenety` slash command (where Claude Code itself produces the summary externally and saves it via `circle --save`). Running `sincenety` from a CLI/cron context with this provider now throws with a message explaining the constraint.
+- **Prompt hardening for both AI paths.** Cloudflare Workers AI and Anthropic prompts now strictly forbid echoing user prompt text into the summary. The prompt structure separates "user intent (context only)" from "assistant action/artifact (summary target)", and instructs the model to write in 3rd-person observer voice focused on what was produced/changed/decided.
+
+#### Root cause of "AI summary not running" symptom
+
+Before v0.8.6, `src/core/summarizer.ts:279` had a switch that handled `cloudflare` and `anthropic` providers but **fell through to the heuristic branch** for `claude-code` and unset providers. Combined with `summarizer.ts:141`'s `catch {}` silently swallowing all Anthropic API errors, any failure mode (wrong provider config, network error, auth failure) would silently degrade to the regex-based input-text echo. From the user's perspective: "I configured AI but the email looks like my input was just reformatted." That was literally what happened — the regex just sliced first sentences out of `userInput` and joined them with arrows.
+
+A second contamination path: `src/core/gatherer.ts` was also calling `summarizeSessions` on every gather to fill in session titles, even though the real summary happens later in `autoSummarize`. That call is now removed.
+
+#### Core changes
+
+- **`src/core/summarizer.ts`**:
+  - **Deleted**: `summarizeHeuristic()` function (~90 lines of regex extraction logic).
+  - **New**: `AiUnavailableError` exception class for callers to catch and abort.
+  - **`summarizeSession()`** now returns `Promise<SessionSummary>` (non-nullable) and throws on any failure.
+  - **Removed silent `catch {}`** in `summarizeWithClaude` — Anthropic SDK errors now propagate (auth, rate limit, network). Same for empty-response and JSON-parse failures.
+  - **`claude-code` provider explicitly throws** with message indicating slash-command-only usage.
+  - **Heuristic / unset provider explicitly throws** with remediation hint.
+  - Prompt restructured: turn format is `[턴 N] 사용자 의도(맥락): ... / 어시스턴트 수행/산출물: ...` — separating intent from action. Output rules forbid quoting user utterances and require 3rd-person voice.
+
+- **`src/core/ai-provider.ts`**:
+  - **New**: `assertAiReadyForCliPipeline(storage)` — single source of truth for the pipeline-entry check. Cleanly rejects `claude-code` (CLI context), `heuristic` (no provider), and `cloudflare`/`anthropic` without credentials.
+
+- **`src/core/circle.ts:autoSummarize`**:
+  - Calls the guard at the top — throws before any DB read if AI is not ready.
+  - Per-session AI failure is no longer swallowed by the per-date `try/catch`. The catch block was removed; AI failures propagate up to the caller, aborting the whole `autoSummarize` call. **Partial summaries are never written to `daily_reports`.**
+  - Cloudflare `cfSummarize` returning null is now treated as failure → throw (was: silent skip).
+  - The cross-device D1 pull `try/catch` is preserved (network flakiness is expected and orthogonal to summary correctness), but its silent `catch` blocks now log warnings with the actual error message.
+
+- **`src/core/circle.ts:runCircle`**:
+  - Calls `assertAiReadyForCliPipeline(storage)` immediately before invoking `autoSummarize` (only on the CLI path — `--json`/`--save`/`--skipAutoSummarize` paths bypass since they're for the slash-command flow).
+
+- **`src/core/gatherer.ts`**:
+  - **Removed** the `summarizeSessions` call. `gather_reports` rows now contain only raw session metadata (title from `s.title ?? s.summary` with stripped XML tags). The `wrapUp` field on the gather report is removed since it was filled by the heuristic. AI-generated wrapUp lives only in `daily_reports.summary_json` going forward.
+
+- **`src/cloud/cf-ai.ts`**:
+  - Prompt rewrite mirrors `summarizer.ts`: turn format separates intent/action, system prompt enumerates 5 strict output rules (no user-quote, 3rd-person, integrate intent+artifact, ignore filler responses, JSON only).
+  - **Silent `catch { return null }` removed** — HTTP errors, missing content, and JSON parse failures all throw with descriptive messages so `circle.autoSummarize` can abort the pipeline.
+
+#### Test changes
+
+- **`tests/cf-ai.test.ts`**: "should handle API errors gracefully" test renamed and rewritten — now asserts `rejects.toThrow(/Workers AI HTTP 401/)` instead of `expect(result).toBeNull()`. Reflects the new contract: silent null returns are forbidden.
+- **`tests/circle.test.ts`**: 4 `runCircle — summaryErrors propagation` tests now seed `ai_provider=cloudflare` + dummy D1 credentials so they pass the guard. 2 new tests added:
+  - `runCircle throws when AI provider is unconfigured (full pipeline halt)`
+  - `claude-code provider throws on CLI path with slash-command guidance`
+- **173/173 tests passing** (was 171 → +2 guard tests, no removals).
+
+#### Verification
+
+1. **Reproduction of the user's symptom** (forensic): inspecting `daily_reports` for 2026-04-14 showed `topic = "오늘 cli 환경에서 실행한거 skip 되었던데, 내 홈 위치 실행했어(~/), 왜 sk…"` and `flow = "오늘 cli 환경에서 실행한거 skip 되었던데, 내… → cli 에서 어제 날짜기준 정리하려면 어떻게 명령어 …"` — verbatim user prompt text echoed by the heuristic. Confirmed root cause.
+2. **Cloudflare AI smoke test** (isolated): direct `summarizeSession` call with the exact "echoed" user input now produces `topic: "skill 자동 호출 문제 해결"` and `outcome` describing the actual code changes (file paths, version bump, install logic) in 3rd person. Zero user-prompt characters appear in the output.
+3. **Guard test** (isolated): `summarizeSession` with `ai_provider=claude-code` throws `AiUnavailableError` with the slash-command hint as expected.
+4. **End-to-end CLI test**: `node dist/cli.js out` with `ai_provider=claude-code` (the bad config) now prints the clear Korean error message, sends 0 emails, exits with code 1 (verified directly).
+5. **Forced regeneration of historical rows**: 2026-04-14 (6 sessions, 5 after merge) and 2026-04-15 (1 session) regenerated through `autoSummarize`. All session topics/flows are now action-noun phrases with no user-prompt content; overviews integrate the day's work coherently.
+
+#### Migration impact
+
+- **Users with `ai_provider=claude-code`** who run `sincenety` from cron/CLI (not via the slash command): the cron will start failing with exit 1 and a clear message. Switch via `sincenety config --ai-provider cloudflare` (uses existing D1 token) or `sincenety config --ai-provider anthropic` + set `ANTHROPIC_API_KEY`.
+- **Users with no AI configured**: same — the pipeline now refuses to run rather than emailing useless heuristic output. Configure cloudflare or anthropic.
+- **Existing `daily_reports` rows generated by the heuristic** are not auto-corrected (their `emailedAt != null` guard still protects them from overwrite). To regenerate manually: clear `summaryJson` and `emailedAt` on the affected row, then re-run `circle` or call `autoSummarize` directly.
+
+---
+
 ### v0.8.5 (2026-04-15) — Auto-install Claude Code skill on `npm install -g`
 
 #### Highlights
