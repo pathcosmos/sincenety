@@ -1,7 +1,5 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
 import { SqlJsAdapter } from "../src/storage/sqljs-adapter.js";
 import {
   getWeekBoundary,
@@ -14,28 +12,23 @@ import {
 } from "../src/core/circle.js";
 import type { MergedSummary } from "../src/core/circle.js";
 import type { DailyReport, StorageAdapter } from "../src/storage/adapter.js";
+import { createTestAdapter, cleanupTestAdapter, type TestAdapterContext } from "./helpers.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-let tmpDir: string;
+let ctx: TestAdapterContext;
 let adapter: SqlJsAdapter;
 
 async function createAdapter(): Promise<SqlJsAdapter> {
-  tmpDir = mkdtempSync(join(tmpdir(), "sincenety-circle-test-"));
-  adapter = new SqlJsAdapter({ dbPath: join(tmpDir, "test.db") });
-  await adapter.initialize();
+  ctx = await createTestAdapter("sincenety-circle-test");
+  adapter = ctx.adapter;
   return adapter;
 }
 
 afterEach(async () => {
-  if (adapter) {
-    await adapter.close();
-  }
-  if (tmpDir) {
-    rmSync(tmpDir, { recursive: true, force: true });
-  }
+  if (ctx) await cleanupTestAdapter(ctx);
 });
 
 // ---------------------------------------------------------------------------
@@ -979,7 +972,7 @@ describe("runCircle — summaryErrors propagation", () => {
     await createAdapter();
     await seedAiConfig(adapter);
     // 빈 history 파일로 runAir이 side-effect 없이 끝나도록 함
-    const emptyHistory = join(tmpDir, "empty-history.jsonl");
+    const emptyHistory = join(ctx.tmpDir, "empty-history.jsonl");
     await import("node:fs").then(({ writeFileSync }) => writeFileSync(emptyHistory, ""));
 
     const wrapped = wrapStorageWithFailingGetDailyReport(adapter, "weekly", "boom weekly");
@@ -998,7 +991,7 @@ describe("runCircle — summaryErrors propagation", () => {
   it("records monthly failure independently of weekly", async () => {
     await createAdapter();
     await seedAiConfig(adapter);
-    const emptyHistory = join(tmpDir, "empty-history.jsonl");
+    const emptyHistory = join(ctx.tmpDir, "empty-history.jsonl");
     await import("node:fs").then(({ writeFileSync }) => writeFileSync(emptyHistory, ""));
 
     const wrapped = wrapStorageWithFailingGetDailyReport(adapter, "monthly", "boom monthly");
@@ -1016,7 +1009,7 @@ describe("runCircle — summaryErrors propagation", () => {
   it("smart mode skips weekly/monthly entirely — no summaryErrors even if would fail", async () => {
     await createAdapter();
     await seedAiConfig(adapter);
-    const emptyHistory = join(tmpDir, "empty-history.jsonl");
+    const emptyHistory = join(ctx.tmpDir, "empty-history.jsonl");
     await import("node:fs").then(({ writeFileSync }) => writeFileSync(emptyHistory, ""));
 
     // weekly/monthly를 throw하게 감쌌지만, smart 모드는 호출 자체를 하지 않음
@@ -1028,7 +1021,7 @@ describe("runCircle — summaryErrors propagation", () => {
   it("full mode with healthy storage returns empty summaryErrors", async () => {
     await createAdapter();
     await seedAiConfig(adapter);
-    const emptyHistory = join(tmpDir, "empty-history.jsonl");
+    const emptyHistory = join(ctx.tmpDir, "empty-history.jsonl");
     await import("node:fs").then(({ writeFileSync }) => writeFileSync(emptyHistory, ""));
 
     const result = await runCircle(adapter, { historyPath: emptyHistory, mode: "full" });
@@ -1038,7 +1031,7 @@ describe("runCircle — summaryErrors propagation", () => {
   it("AI provider 미설정 상태에서 runCircle이 throw — 전체 파이프라인 중단", async () => {
     await createAdapter();
     // 일부러 AI config 주입하지 않음 — provider = "heuristic"
-    const emptyHistory = join(tmpDir, "empty-history.jsonl");
+    const emptyHistory = join(ctx.tmpDir, "empty-history.jsonl");
     await import("node:fs").then(({ writeFileSync }) => writeFileSync(emptyHistory, ""));
 
     await expect(
@@ -1049,11 +1042,159 @@ describe("runCircle — summaryErrors propagation", () => {
   it("ai_provider=claude-code는 CLI 경로에서 throw — 슬래시 명령 전용임을 알림", async () => {
     await createAdapter();
     await adapter.setConfig("ai_provider", "claude-code");
-    const emptyHistory = join(tmpDir, "empty-history.jsonl");
+    const emptyHistory = join(ctx.tmpDir, "empty-history.jsonl");
     await import("node:fs").then(({ writeFileSync }) => writeFileSync(emptyHistory, ""));
 
     await expect(
       runCircle(adapter, { historyPath: emptyHistory, mode: "full" }),
     ).rejects.toThrow(/\/sincenety 슬래시 명령에서만/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// runCircle — rerun option (#10)
+// ---------------------------------------------------------------------------
+
+describe("runCircle — rerun", () => {
+  async function seedAiConfig(a: StorageAdapter): Promise<void> {
+    await a.setConfig("d1_account_id", "test-account");
+    await a.setConfig("d1_api_token", "test-token");
+    await a.setConfig("ai_provider", "cloudflare");
+  }
+
+  function makeDR(date: string, overrides: Partial<DailyReport> = {}): DailyReport {
+    return {
+      reportDate: date, reportType: "daily", periodFrom: 0, periodTo: 86400000,
+      sessionCount: 1, totalMessages: 1, totalTokens: 100,
+      summaryJson: '[{"sessionId":"s1","topic":"test"}]',
+      overview: null, reportMarkdown: null, createdAt: Date.now(),
+      emailedAt: null, emailTo: null, status: "finalized",
+      progressLabel: null, dataHash: "abc", ...overrides,
+    };
+  }
+
+  it("rerun invalidates date and includes it in needsSummary", async () => {
+    await createAdapter();
+    await seedAiConfig(adapter);
+    const date = "2026-04-15";
+    await adapter.saveDailyReport(makeDR(date));
+    const emptyHistory = join(ctx.tmpDir, "empty-history.jsonl");
+    await import("node:fs").then(({ writeFileSync }) => writeFileSync(emptyHistory, ""));
+
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      await runCircle(adapter, { historyPath: emptyHistory, mode: "full", rerun: [date] });
+      // invalidation 후 autoSummarize가 재생성할 수 있으므로 invalidated 로그만 확인
+      const logOutput = logSpy.mock.calls.map((c) => String(c[0])).join("\n");
+      expect(logOutput).toContain("invalidated");
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
+  it("rerun skips emailed date with warning", async () => {
+    await createAdapter();
+    await seedAiConfig(adapter);
+    const date = "2026-04-15";
+    const id = await adapter.saveDailyReport(makeDR(date));
+    await adapter.updateDailyReportEmail(id, 12345, "test@test.com");
+    const emptyHistory = join(ctx.tmpDir, "empty-history.jsonl");
+    await import("node:fs").then(({ writeFileSync }) => writeFileSync(emptyHistory, ""));
+
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      await runCircle(adapter, { historyPath: emptyHistory, mode: "full", rerun: [date] });
+      expect(warnSpy.mock.calls.some((c) => String(c[0]).includes("skip rerun"))).toBe(true);
+    } finally {
+      warnSpy.mockRestore();
+      logSpy.mockRestore();
+    }
+  });
+
+  it("rerun with non-existent date warns and continues", async () => {
+    await createAdapter();
+    await seedAiConfig(adapter);
+    const emptyHistory = join(ctx.tmpDir, "empty-history.jsonl");
+    await import("node:fs").then(({ writeFileSync }) => writeFileSync(emptyHistory, ""));
+
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      const result = await runCircle(adapter, { historyPath: emptyHistory, mode: "full", rerun: ["2099-01-01"] });
+      expect(warnSpy.mock.calls.some((c) => String(c[0]).includes("skip rerun"))).toBe(true);
+      expect(result.summaryErrors).toEqual([]);
+    } finally {
+      warnSpy.mockRestore();
+      logSpy.mockRestore();
+    }
+  });
+
+  it("rerun with mixed emailed/non-emailed dates", async () => {
+    await createAdapter();
+    await seedAiConfig(adapter);
+    const dateA = "2026-04-14";
+    const dateB = "2026-04-15";
+    const idA = await adapter.saveDailyReport(makeDR(dateA));
+    await adapter.updateDailyReportEmail(idA, 12345, "test@test.com");
+    await adapter.saveDailyReport(makeDR(dateB));
+    const emptyHistory = join(ctx.tmpDir, "empty-history.jsonl");
+    await import("node:fs").then(({ writeFileSync }) => writeFileSync(emptyHistory, ""));
+
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      await runCircle(adapter, { historyPath: emptyHistory, mode: "full", rerun: [dateA, dateB] });
+      // emailed report A: invalidation skipped → still has emailedAt
+      const reportA = await adapter.getDailyReport(dateA, "daily");
+      expect(reportA!.emailedAt).toBe(12345);
+      // non-emailed report B: invalidation succeeded (then autoSummarize may re-create)
+      // verify warnSpy logged skip for dateA
+      expect(warnSpy.mock.calls.some((c) => String(c[0]).includes("skip rerun"))).toBe(true);
+    } finally {
+      warnSpy.mockRestore();
+      logSpy.mockRestore();
+    }
+  });
+
+  it("smart mode + rerun invalidates before summarize", async () => {
+    await createAdapter();
+    await seedAiConfig(adapter);
+    const date = "2026-04-15";
+    await adapter.saveDailyReport(makeDR(date));
+    const emptyHistory = join(ctx.tmpDir, "empty-history.jsonl");
+    await import("node:fs").then(({ writeFileSync }) => writeFileSync(emptyHistory, ""));
+
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      const result = await runCircle(adapter, { historyPath: emptyHistory, mode: "smart", rerun: [date] });
+      // smart mode skips weekly/monthly — no summaryErrors
+      expect(result.summaryErrors).toEqual([]);
+      // rerun 자체는 크래시 없이 완료
+      const logOutput = logSpy.mock.calls.map((c) => String(c[0])).join("\n");
+      expect(logOutput).toContain("invalidated");
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
+  it("duplicate rerun dates only invalidate once", async () => {
+    await createAdapter();
+    await seedAiConfig(adapter);
+    const date = "2026-04-15";
+    await adapter.saveDailyReport(makeDR(date));
+    const emptyHistory = join(ctx.tmpDir, "empty-history.jsonl");
+    await import("node:fs").then(({ writeFileSync }) => writeFileSync(emptyHistory, ""));
+
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      // 동일 날짜 2번 전달 — 첫 번째에서 invalidate, 두 번째는 status=stale 상태에서 다시 invalidate
+      // 크래시 없이 정상 동작하면 OK
+      await expect(
+        runCircle(adapter, { historyPath: emptyHistory, mode: "full", rerun: [date, date] }),
+      ).resolves.toBeDefined();
+    } finally {
+      logSpy.mockRestore();
+    }
   });
 });

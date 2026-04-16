@@ -998,6 +998,41 @@ npx .                # 현재 디렉토리를 npx로 실행
 
 ## 개발 이력
 
+### v0.8.7 (2026-04-16) — 수정: 당일 새 세션 추가 시 autoSummarize가 재요약하지 않던 버그
+
+#### 버그
+
+- **`autoSummarize`가 `daily_reports`에 `summaryJson`이 이미 있으면 재요약을 건너뛰는 문제.** 오전 10시에 `sincenety` 실행(세션 A, B 요약 완료) 후 오후 3시에 다시 실행하면, air는 새 세션 C를 감지(data hash 변경)하여 `gather_reports`를 갱신하지만, `autoSummarize`는 기존 `summaryJson`을 보고 `continue` — 세션 C가 일일 요약에 포함되지 않음. 이메일에는 오전 시점의 세션만 표시.
+
+#### 근본 원인
+
+`circle.ts:autoSummarize`의 662-665행:
+
+```typescript
+const existingReport = await storage.getDailyReport(date, "daily");
+if (existingReport?.summaryJson) continue;
+```
+
+`summaryJson`이 존재하면 "이 날짜는 요약 완료"로 가정했으나, `air`가 새 세션으로 `gather_reports`를 갱신하면서 `updatedAt`이 갱신됨 — `daily_reports`는 **stale** 상태. `getDailyReportFreshness` 인프라가 이미 이를 감지하고 있었지만 `autoSummarize`가 이를 참조하지 않았음.
+
+#### 수정
+
+스킵 로직이 이제 freshness를 확인:
+
+1. **발송 완료** (`emailedAt != null`) → 항상 스킵 (발송본 보호)
+2. **최신** (gather의 `updatedAt` ≤ daily의 `createdAt`) → 스킵 (새 데이터 없음)
+3. **Stale** (gather가 daily 이후 갱신됨) → **재요약 수행** + `♻️ re-summarizing` 로그
+
+v0.8.4에서 도입된 기존 `storage.getDailyReportFreshness()` 메서드를 재활용 (이전에는 `out.ts`의 경고 로그에서만 사용).
+
+#### 변경 파일
+
+- **`src/core/circle.ts`**: `autoSummarize` — 단순 `summaryJson` 존재 체크를 freshness 기반 로직으로 교체
+- **`package.json`**: 버전 0.8.6 → 0.8.7
+- **`src/cli.ts`**: 버전 문자열 갱신
+
+---
+
 ### v0.8.6 (2026-04-16) — 휴리스틱 요약 fallback 완전 제거 + AI 필수 파이프라인 가드 + 프롬프트 강화
 
 #### 하이라이트

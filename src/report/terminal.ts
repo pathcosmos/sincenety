@@ -37,41 +37,7 @@ function fmtTokens(n: number): string {
   return String(n);
 }
 
-/** 문자열의 표시 폭 계산 (한글=2, ASCII=1) */
-function displayWidth(str: string): number {
-  let w = 0;
-  for (const ch of str) {
-    const code = ch.codePointAt(0) ?? 0;
-    // CJK Unified, Hangul Syllables, Fullwidth forms
-    if (
-      (code >= 0x1100 && code <= 0x115f) ||
-      (code >= 0x2e80 && code <= 0xa4cf) ||
-      (code >= 0xac00 && code <= 0xd7a3) ||
-      (code >= 0xf900 && code <= 0xfaff) ||
-      (code >= 0xfe10 && code <= 0xfe6f) ||
-      (code >= 0xff01 && code <= 0xff60) ||
-      (code >= 0xffe0 && code <= 0xffe6) ||
-      (code >= 0x20000 && code <= 0x2fffd)
-    ) {
-      w += 2;
-    } else {
-      w += 1;
-    }
-  }
-  return w;
-}
-
-/** 표시 폭 기준으로 오른쪽 패딩 */
-function padEnd(str: string, width: number): string {
-  const diff = width - displayWidth(str);
-  return diff > 0 ? str + " ".repeat(diff) : str;
-}
-
-/** 표시 폭 기준으로 왼쪽 패딩 (숫자 정렬용) */
-function padStart(str: string, width: number): string {
-  const diff = width - displayWidth(str);
-  return diff > 0 ? " ".repeat(diff) + str : str;
-}
+import { displayWidth, padEndW as padEnd, padStartW as padStart } from "../util/display-width.js";
 
 function truncate(str: string, maxWidth: number): string {
   let w = 0;

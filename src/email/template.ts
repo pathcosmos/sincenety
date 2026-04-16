@@ -114,6 +114,9 @@ export interface EmailData {
   totalCostUsd?: number;
   totalCacheTokens?: number;
   dailyOverview?: string;
+  /** #5 요약 출처 정보 */
+  aiProvider?: string;
+  summaryUpdatedAt?: number;
 }
 
 // ── 섹션 헤더 (컬러 배경 바) ──
@@ -433,6 +436,13 @@ export function renderEmailHtml(data: EmailData): string {
         <td align="right" style="font-size:9px;color:${C.textDim};font-family:${C.mono}">${fmtTime(fromTimestamp)} → ${fmtTime(toTimestamp)}</td>
       </tr>
     </table>
+    ${data.aiProvider ? `<table width="100%" cellpadding="0" cellspacing="0" style="margin-top:4px">
+      <tr>
+        <td style="font-size:9px;color:${C.textDim};font-family:${C.mono}">
+          AI: ${esc(data.aiProvider)}${data.summaryUpdatedAt ? ` · summarized ${new Date(data.summaryUpdatedAt).toLocaleString("ko-KR")}` : ""}
+        </td>
+      </tr>
+    </table>` : ""}
   </td></tr>
 
 </table>

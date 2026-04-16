@@ -967,6 +967,41 @@ node dist/cli.js     # Direct execution
 
 ## Changelog
 
+### v0.8.7 (2026-04-16) — Fix: autoSummarize now re-summarizes when new sessions arrive mid-day
+
+#### Bug
+
+- **`autoSummarize` skipped re-summarization when `daily_reports` already had `summaryJson`.** If `sincenety` ran at 10am (summarizing sessions A, B) and ran again at 3pm (air detected new session C via data hash change), the second run's `autoSummarize` saw the existing `summaryJson` and `continue`'d — session C was never included in the daily summary. The user saw only the morning's sessions in the email.
+
+#### Root cause
+
+`circle.ts:autoSummarize` line 662-665 had:
+
+```typescript
+const existingReport = await storage.getDailyReport(date, "daily");
+if (existingReport?.summaryJson) continue;
+```
+
+This check assumed that any existing `summaryJson` meant "this date is fully summarized." But `air` correctly updated `gather_reports` with the new session data (and a new `updatedAt` timestamp), making the `daily_reports` row **stale** — the freshness infrastructure (`getDailyReportFreshness`) already detected this, but `autoSummarize` never consulted it.
+
+#### Fix
+
+The skip logic now checks freshness before skipping:
+
+1. **Emailed report** (`emailedAt != null`) → always skip (protect sent reports)
+2. **Fresh report** (gather's `updatedAt` ≤ daily's `createdAt`) → skip (no new data)
+3. **Stale report** (gather updated after daily was created) → **re-summarize** with log `♻️ re-summarizing`
+
+This reuses the existing `storage.getDailyReportFreshness()` method (introduced in v0.8.4, previously only used for warning logs in `out.ts`).
+
+#### Files changed
+
+- **`src/core/circle.ts`**: `autoSummarize` — replaced simple `summaryJson` existence check with freshness-aware logic
+- **`package.json`**: version bump 0.8.6 → 0.8.7
+- **`src/cli.ts`**: version string updated
+
+---
+
 ### v0.8.6 (2026-04-16) — Heuristic summary fallback removed + AI-required pipeline guard + prompt hardening
 
 #### Highlights

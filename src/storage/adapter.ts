@@ -68,6 +68,22 @@ export interface DailyReport {
   dataHash: string | null;       // gather data hash for change detection
 }
 
+/** #1 신선도 판정 정보. runOut/doctor/verify가 공유. */
+export interface FreshnessInfo {
+  /** 요약 존재 여부 */
+  hasDailyReport: boolean;
+  /** 원본 갈무리 존재 여부 */
+  hasGatherReport: boolean;
+  /** 원본 갈무리 updated_at (ms). 없으면 null */
+  gatherUpdatedAt: number | null;
+  /** 요약 created_at (ms). 없으면 null */
+  dailyCreatedAt: number | null;
+  /** 이미 발송됐는지 — 발송본은 stale이어도 덮어쓰지 않음 */
+  emailed: boolean;
+  /** stale 판정: hasGatherReport && hasDailyReport && gatherUpdatedAt > dailyCreatedAt */
+  stale: boolean;
+}
+
 export interface VacationRecord {
   id?: number;
   date: string;           // YYYY-MM-DD
@@ -117,6 +133,10 @@ export interface StorageAdapter {
   getLatestDailyReport(type?: string): Promise<DailyReport | null>;
   updateDailyReportEmail(reportId: number, emailedAt: number, emailTo: string): Promise<void>;
   updateDailyReportStatus(reportDate: string, reportType: string, status: string, progressLabel?: string): Promise<void>;
+  /** daily/weekly/monthly 요약 신선도 체크 (updatedAt 기반). undefined면 raw 갈무리도 없음. */
+  getDailyReportFreshness(date: string, type: "daily" | "weekly" | "monthly"): Promise<FreshnessInfo | null>;
+  /** rerun용 — 특정 날짜의 daily_report를 status=stale, data_hash=null로 표시 (emailedAt 있으면 skip) */
+  invalidateDailyReport(date: string, type: "daily" | "weekly" | "monthly"): Promise<boolean>;
 
   // 휴가
   saveVacation(vacation: VacationRecord): Promise<void>;

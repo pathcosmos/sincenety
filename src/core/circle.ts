@@ -660,9 +660,14 @@ export async function autoSummarize(
   let summarized = 0;
 
   for (const date of changedDates) {
-    // 이미 요약된 날짜는 스킵 (SKILL.md circle --save 등으로 저장된 경우)
+    // 이미 요약된 날짜 처리: 발송 완료면 보호, stale이면 재요약
     const existingReport = await storage.getDailyReport(date, "daily");
-    if (existingReport?.summaryJson) continue;
+    if (existingReport?.summaryJson) {
+      if (existingReport.emailedAt != null) continue;
+      const freshness = await storage.getDailyReportFreshness(date, "daily");
+      if (freshness && !freshness.stale) continue;
+      console.log(`  ♻️  ${date} re-summarizing (gather updated after last summary)`);
+    }
 
     const report = await storage.getGatherReportByDate(date);
     if (!report?.reportJson) continue;
@@ -796,9 +801,29 @@ export async function runCircle(
     save?: boolean;
     skipAutoSummarize?: boolean;
     mode?: PipelineMode;
+    /** #10 rerun: 강제 재요약할 날짜(YYYY-MM-DD) 목록. 발송본은 보호됨. */
+    rerun?: string[];
+    /** #2 claude-code provider일 때 needs_skill JSON으로 종료시킬 CLI 명령명 */
+    needsSkillCommand?: string;
   },
 ): Promise<CircleResult> {
+  // #10 rerun 처리 — autoSummarize 전에 지정 날짜 무효화하여 재생성 강제
+  const rerunDates: string[] = [];
+  if (options?.rerun && options.rerun.length > 0) {
+    for (const d of options.rerun) {
+      const ok = await storage.invalidateDailyReport(d, "daily");
+      if (ok) {
+        rerunDates.push(d);
+        console.log(`  ♻️  ${d} invalidated for rerun`);
+      } else {
+        console.warn(`  ⚠️  ${d} skip rerun (not found or already emailed)`);
+      }
+    }
+  }
+
   const airResult = await runAir(storage, options);
+  // rerun으로 무효화된 날짜를 changedDates에 병합 (air이 변경 감지 못할 수 있음)
+  const allChanged = Array.from(new Set([...airResult.changedDates, ...rerunDates]));
   const finalized = await finalizePreviousReports(storage, new Date());
   const summaryErrors: CircleSummaryError[] = [];
 
@@ -806,9 +831,9 @@ export async function runCircle(
   if (!options?.json && !options?.save && !options?.skipAutoSummarize) {
     // AI 진입 가드 — provider 설정 불량이면 즉시 throw하여 sincenety 파이프라인 전체 중단
     const { assertAiReadyForCliPipeline } = await import("./ai-provider.js");
-    await assertAiReadyForCliPipeline(storage);
+    await assertAiReadyForCliPipeline(storage, options?.needsSkillCommand);
 
-    const summarized = await autoSummarize(storage, airResult.changedDates);
+    const summarized = await autoSummarize(storage, allChanged);
     if (summarized > 0) {
       console.log(`  🤖 ${summarized} day(s) summarized`);
     }
@@ -841,7 +866,7 @@ export async function runCircle(
   return {
     airResult,
     finalized,
-    needsSummary: airResult.changedDates,
+    needsSummary: allChanged,
     summaryErrors,
   };
 }

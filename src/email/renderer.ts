@@ -5,6 +5,8 @@
 import type { StorageAdapter } from "../storage/adapter.js";
 import { renderEmailHtml, type EmailData, type SessionData } from "./template.js";
 import { mergeSessionsByTopic } from "./merge-sessions.js";
+import { getProjectWeights, resolveWeight } from "../core/weights.js";
+import { resolveAiProvider } from "../core/ai-provider.js";
 
 export interface RenderedEmail {
   subject: string;
@@ -189,6 +191,25 @@ export async function renderDailyEmail(
   // 7.6. 동일 프로젝트+제목 세션 머지
   sessions = mergeSessionsByTopic(sessions);
 
+  // 7.7. #12 프로젝트 가중치 적용 — low = 1줄 축약, high는 그대로
+  const weights = await getProjectWeights(storage);
+  sessions = sessions.map((s) => {
+    const w = resolveWeight(weights, s.projectName);
+    if (w === "low") {
+      // low: description/actions/wrapUp 상세 축약 (1줄만 남김)
+      const compact = s.wrapUp?.significance || s.title || s.summary;
+      return {
+        ...s,
+        description: compact,
+        actions: [],
+        wrapUp: s.wrapUp
+          ? { outcome: compact, significance: compact, flow: undefined, nextSteps: undefined }
+          : undefined,
+      };
+    }
+    return s;
+  });
+
   if (sessions.length === 0) return null;
 
   // 8. 제목 구성
@@ -198,7 +219,9 @@ export async function renderDailyEmail(
   const typeLabel = TYPE_LABELS[reportType] ?? reportType;
   const subject = `[sincenety] ${date} ${typeLabel} — ${sessions.length} sessions, ${totalMessages}msg, ${totalTokensK}Ktok`;
 
-  // 9. HTML 렌더
+  // 9. HTML 렌더 (#5 배지 메타데이터 포함)
+  const aiProvider = await resolveAiProvider(storage).catch(() => null);
+  const summaryUpdatedAt = dailyReport?.createdAt;
   let html: string;
   try {
     const emailData: EmailData = {
@@ -207,6 +230,8 @@ export async function renderDailyEmail(
       toTimestamp,
       gatheredAt,
       dailyOverview: dailyOverview ?? undefined,
+      aiProvider: aiProvider && aiProvider !== "heuristic" ? aiProvider : undefined,
+      summaryUpdatedAt,
     };
     html = renderEmailHtml(emailData);
   } catch {

@@ -751,6 +751,51 @@ export class SqlJsAdapter implements StorageAdapter {
     await this.save();
   }
 
+  async getDailyReportFreshness(
+    date: string,
+    type: "daily" | "weekly" | "monthly",
+  ): Promise<import("./adapter.js").FreshnessInfo | null> {
+    this.ensureDb();
+    const daily = await this.getDailyReport(date, type);
+    const gather = type === "daily" ? await this.getGatherReportByDate(date) : null;
+
+    if (!daily && !gather) return null;
+
+    const gatherUpdatedAt = gather?.updatedAt ?? null;
+    const dailyCreatedAt = daily?.createdAt ?? null;
+    const emailed = daily?.emailedAt != null;
+    const stale = !!(
+      daily && gather && gatherUpdatedAt != null && dailyCreatedAt != null &&
+      gatherUpdatedAt > dailyCreatedAt
+    );
+
+    return {
+      hasDailyReport: !!daily,
+      hasGatherReport: !!gather,
+      gatherUpdatedAt,
+      dailyCreatedAt,
+      emailed,
+      stale,
+    };
+  }
+
+  async invalidateDailyReport(
+    date: string,
+    type: "daily" | "weekly" | "monthly",
+  ): Promise<boolean> {
+    this.ensureDb();
+    const existing = await this.getDailyReport(date, type);
+    if (!existing) return false;
+    if (existing.emailedAt != null) return false; // 발송본 보호
+    this.db!.run(
+      `UPDATE daily_reports SET status = 'stale', data_hash = NULL
+       WHERE report_date = ? AND report_type = ?`,
+      [date, type],
+    );
+    await this.save();
+    return true;
+  }
+
   // ── 휴가 ──
 
   async saveVacation(vacation: VacationRecord): Promise<void> {

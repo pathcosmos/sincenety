@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import {
   isLastDayOfMonth,
   determineReportTypes,
@@ -6,9 +6,12 @@ import {
   parseDateArg,
   resolvePipelineMode,
   collectUnrecordedSummaryErrors,
+  printVerifyTable,
+  findUnsentReports,
 } from "../src/core/out.js";
 import type { CircleSummaryError } from "../src/core/circle.js";
-import type { OutResultEntry } from "../src/core/out.js";
+import type { OutResultEntry, VerifyCheck } from "../src/core/out.js";
+import type { StorageAdapter, DailyReport } from "../src/storage/adapter.js";
 
 // ---------------------------------------------------------------------------
 // isLastDayOfMonth
@@ -320,5 +323,122 @@ describe("collectUnrecordedSummaryErrors", () => {
     const result = collectUnrecordedSummaryErrors(errors, [], today);
     expect(result[0].error).toMatch(/weekly baseline auto-summary failed/);
     expect(result[0].error).toContain("db down");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// printVerifyTable
+// ---------------------------------------------------------------------------
+
+describe("printVerifyTable", () => {
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  function makeCheck(overrides: Partial<VerifyCheck>): VerifyCheck {
+    return {
+      type: "daily", dateKey: "2026-04-16", summary: "OK",
+      baseline: "OK", recipient: "OK",
+      gatherUpdatedAt: null, dailyCreatedAt: null, ...overrides,
+    };
+  }
+
+  it("prints header", () => {
+    const spy = vi.spyOn(console, "log").mockImplementation(() => {});
+    printVerifyTable([makeCheck({})]);
+    const output = spy.mock.calls.map((c) => c[0]).join("\n");
+    expect(output).toContain("Verify report readiness");
+    spy.mockRestore();
+  });
+
+  it("renders OK status", () => {
+    const spy = vi.spyOn(console, "log").mockImplementation(() => {});
+    printVerifyTable([makeCheck({ summary: "OK" })]);
+    const output = spy.mock.calls.map((c) => c[0]).join("\n");
+    expect(output).toContain("✅ OK");
+    spy.mockRestore();
+  });
+
+  it("renders MISSING status", () => {
+    const spy = vi.spyOn(console, "log").mockImplementation(() => {});
+    printVerifyTable([makeCheck({ summary: "MISSING" })]);
+    const output = spy.mock.calls.map((c) => c[0]).join("\n");
+    expect(output).toContain("❌ MISSING");
+    spy.mockRestore();
+  });
+
+  it("renders STALE status", () => {
+    const spy = vi.spyOn(console, "log").mockImplementation(() => {});
+    printVerifyTable([makeCheck({ summary: "STALE" })]);
+    const output = spy.mock.calls.map((c) => c[0]).join("\n");
+    expect(output).toContain("⚠️  STALE");
+    spy.mockRestore();
+  });
+
+  it("renders EMAILED status", () => {
+    const spy = vi.spyOn(console, "log").mockImplementation(() => {});
+    printVerifyTable([makeCheck({ summary: "EMAILED" })]);
+    const output = spy.mock.calls.map((c) => c[0]).join("\n");
+    expect(output).toContain("📧 SENT");
+    spy.mockRestore();
+  });
+
+  it("handles empty array without crash", () => {
+    const spy = vi.spyOn(console, "log").mockImplementation(() => {});
+    expect(() => printVerifyTable([])).not.toThrow();
+    const output = spy.mock.calls.map((c) => c[0]).join("\n");
+    expect(output).toContain("Verify report readiness");
+    spy.mockRestore();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// findUnsentReports
+// ---------------------------------------------------------------------------
+
+describe("findUnsentReports", () => {
+  function makeMockStorage(reports: Record<string, Partial<DailyReport> | null>): StorageAdapter {
+    return {
+      getDailyReport: vi.fn(async (date: string, type?: string) => {
+        const key = `${date}:${type ?? "daily"}`;
+        const r = reports[key] ?? null;
+        return r ? { id: 1, reportDate: date, reportType: type ?? "daily", periodFrom: 0, periodTo: 0, sessionCount: 0, totalMessages: 0, totalTokens: 0, summaryJson: "[]", overview: null, reportMarkdown: null, createdAt: Date.now(), emailedAt: null, emailTo: null, status: "finalized", progressLabel: null, dataHash: null, ...r } : null;
+      }),
+    } as unknown as StorageAdapter;
+  }
+
+  it("returns [weekly] when last week finalized + not emailed", async () => {
+    const monday = "2026-04-06";
+    const storage = makeMockStorage({ [`${monday}:weekly`]: { status: "finalized", emailedAt: null } });
+    const result = await findUnsentReports(storage, new Date(2026, 3, 16));
+    expect(result).toContain("weekly");
+  });
+
+  it("returns [] when last week weekly already emailed", async () => {
+    const monday = "2026-04-06";
+    const storage = makeMockStorage({ [`${monday}:weekly`]: { status: "finalized", emailedAt: 12345 } });
+    const result = await findUnsentReports(storage, new Date(2026, 3, 16));
+    expect(result).not.toContain("weekly");
+  });
+
+  it("returns [monthly] when last month finalized + not emailed", async () => {
+    const storage = makeMockStorage({ ["2026-03-01:monthly"]: { status: "finalized", emailedAt: null } });
+    const result = await findUnsentReports(storage, new Date(2026, 3, 16));
+    expect(result).toContain("monthly");
+  });
+
+  it("returns [weekly, monthly] when both unsent", async () => {
+    const monday = "2026-04-06";
+    const storage = makeMockStorage({
+      [`${monday}:weekly`]: { status: "finalized", emailedAt: null },
+      ["2026-03-01:monthly"]: { status: "finalized", emailedAt: null },
+    });
+    const result = await findUnsentReports(storage, new Date(2026, 3, 16));
+    expect(result).toContain("weekly");
+    expect(result).toContain("monthly");
+  });
+
+  it("handles month-start edge (Apr 3 → last week crosses to March)", async () => {
+    const storage = makeMockStorage({ ["2026-03-23:weekly"]: { status: "finalized", emailedAt: null } });
+    const result = await findUnsentReports(storage, new Date(2026, 3, 3));
+    expect(result).toContain("weekly");
   });
 });

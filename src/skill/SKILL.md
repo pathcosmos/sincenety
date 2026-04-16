@@ -1,11 +1,26 @@
 ---
 name: sincenety
-description: Use when the user wants to log, review, or summarize their Claude Code work sessions — triggered by /sincenety, requests to track work history, or "what did I work on today"
+description: Use when the user wants to log, review, or summarize their Claude Code work sessions — triggered by /sincenety, `sincenety out`, `sincenety outd`, `sincenety outw`, `sincenety outm`, requests to track work history, send daily/weekly/monthly reports, or "what did I work on today"
 ---
 
 # sincenety — 작업 갈무리
 
 실행 한 번으로 Claude Code 작업을 자동 분석하여 구조화된 기록을 생성합니다.
+
+## 🚨 최우선 규칙: out 계열은 반드시 선행 파이프라인 필수
+
+사용자가 다음 중 하나라도 요청하면 — `sincenety out`, `sincenety outd`, `sincenety outw`, `sincenety outm`, "일일보고 보내줘", "주간보고 발송", "월간보고 메일" 등 — **절대로 `sincenety out*`을 먼저 실행하지 마세요.**
+
+대신 아래 순서를 **반드시** 지킵니다:
+
+1. **먼저 `/sincenety` 갈무리 플로우 전체(0~4단계) 실행** — air → Claude Code 직접 요약 → `circle --save`로 DB 저장
+   - 대상 기간: outd=오늘, outw=이번 주 전체(월~일), outm=이번 달 전체
+   - 이미 최신 요약이 DB에 있는 날짜는 스킵 가능 (`circle --json` 결과의 sessions가 비어 있으면 스킵)
+2. **그 후에만** 사용자가 요청한 `sincenety out*` 명령을 실행해 발송
+
+**왜 이 규칙이 필요한가**: `sincenety out*`는 CLI 내부에서 `circle`을 자동 호출하지만, `ai_provider=claude-code`인 환경에서는 CLI가 스스로 요약을 만들 수 없어 휴리스틱/빈 요약으로 발송될 수 있습니다. Claude Code 안에서 이 스킬을 통해 선행 요약을 해야만 품질 보장이 됩니다.
+
+**예외**: 사용자가 명시적으로 "요약 건너뛰고 그냥 보내", "baseline 그대로 발송", "renderOnly만" 등 선행을 생략하라고 지시한 경우에만 out*를 바로 실행합니다.
 
 ## 워크플로우: 갈무리 (기본)
 
@@ -159,6 +174,41 @@ sincenety out
 터미널 출력만 (이메일 스킵)
 
 **참고:** 휴가일에는 발신이 자동 스킵됩니다 (강제 발신: `sincenety outd`)
+
+## 워크플로우: out 계열 요청 (outd / outw / outm / out)
+
+사용자가 `sincenety outd`(또는 outw/outm/out, "일일보고 보내줘" 등)를 요청한 경우:
+
+### 1단계: 대상 기간 판정
+- `outd` / `out` → 오늘 1일
+- `outw` → 이번 주 월요일~일요일
+- `outm` → 이번 달 1일~말일
+
+### 2단계: 선행 갈무리 (필수)
+기본 `/sincenety` 5단계 워크플로우를 **대상 기간 전체**에 대해 수행합니다:
+1. `sincenety circle --json` 실행 → 요약 누락/갱신 필요한 날짜 JSON 수신
+2. 각 날짜의 세션을 Claude Code가 직접 분석 (1-pass → 2-pass → overview)
+3. `echo '{...}' | sincenety circle --save` (daily)로 각 날짜 저장
+4. outw/outm의 경우, 주간/월간 통합 재요약도 수행:
+   ```bash
+   echo '{...}' | sincenety circle --save --type weekly   # 또는 --type monthly
+   ```
+5. `circle --json` 결과가 빈 배열이면 이미 최신이므로 스킵
+
+### 3단계: 발송
+선행이 완료된 후에만 사용자가 요청한 명령을 실행:
+```bash
+sincenety outd     # 또는 outw / outm / out
+```
+
+또는 Gmail MCP 경로:
+```bash
+sincenety outd --render-only
+```
+→ 출력 JSON을 `gmail_create_draft`로 전달.
+
+### 4단계: 결과 확인
+발송 결과(`sent`/`skipped`/`errors`)를 사용자에게 요약 보고. 에러가 있으면 원인과 재시도 방법 안내.
 
 ## 파이프라인 모드 (v0.8.4+)
 

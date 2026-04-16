@@ -34,7 +34,7 @@ const program = new Command();
 program
   .name("sincenety")
   .description("Claude Code work session tracker")
-  .version("0.8.4");
+  .version("0.8.7");
 
 // ─── setup reminder ─────────────────────────────────────
 
@@ -246,36 +246,7 @@ async function showConfigStatus(storage: StorageAdapter): Promise<void> {
   console.log("");
 }
 
-/** 표시 폭 계산 (한글/이모지=2, ASCII=1) */
-function displayWidth(str: string): number {
-  let w = 0;
-  for (const ch of str) {
-    const code = ch.codePointAt(0) ?? 0;
-    if (
-      (code >= 0x1100 && code <= 0x115f) ||
-      (code >= 0x2e80 && code <= 0xa4cf) ||
-      (code >= 0xac00 && code <= 0xd7a3) ||
-      (code >= 0xf900 && code <= 0xfaff) ||
-      (code >= 0xfe10 && code <= 0xfe6f) ||
-      (code >= 0xff01 && code <= 0xff60) ||
-      (code >= 0xffe0 && code <= 0xffe6) ||
-      (code >= 0x20000 && code <= 0x2fffd) ||
-      // common emoji ranges
-      (code >= 0x2600 && code <= 0x27bf) ||
-      (code >= 0x1f300 && code <= 0x1f9ff)
-    ) {
-      w += 2;
-    } else {
-      w += 1;
-    }
-  }
-  return w;
-}
-
-function padEndW(str: string, width: number): string {
-  const diff = width - displayWidth(str);
-  return diff > 0 ? str + " ".repeat(diff) : str;
-}
+import { displayWidth, padEndW } from "./util/display-width.js";
 
 // ─── air 명령 ───────────────────────────────────────────
 
@@ -351,6 +322,7 @@ program
   .option("--summarize", "Include Workers AI summaries (with --json)")
   .option("--type <type>", "Report type: daily | weekly | monthly", "daily")
   .option("--history <path>", "Path to history.jsonl")
+  .option("--rerun <dates...>", "Force re-summarize specific dates (YYYY-MM-DD)")
   .action(async (options) => {
     if (options.save) {
       // stdin JSON 읽기
@@ -431,7 +403,7 @@ program
         const jsonResult = await circleJson(storage, { historyPath, summarize: options.summarize });
         console.log(JSON.stringify(jsonResult));
       } else {
-        const result = await runCircle(storage, { historyPath });
+        const result = await runCircle(storage, { historyPath, rerun: options.rerun });
         console.log("");
         console.log(`  📋 circle complete`);
         console.log(`     Date range: ${result.airResult.dates.length} days`);
@@ -464,6 +436,7 @@ program
   .option("--render-only", "Output HTML/subject/recipient JSON (for Gmail MCP)")
   .option("--date <yyyyMMdd>", "Target date (e.g. 20260409)")
   .option("--history", "Show recent send history")
+  .option("--verify", "Check readiness without sending (summary/baseline/recipient)")
   .option(
     "--mode <mode>",
     "Pipeline mode: full (regenerate weekly/monthly baseline every run) | smart (daily only, weekly/monthly on trigger)",
@@ -535,10 +508,12 @@ program
       const result = await runOut(storage, {
         preview: options.preview,
         renderOnly: options.renderOnly,
+        verify: options.verify,
         date: options.date,
         mode,
+        needsSkillCommand: "out",
       });
-      if (!options.renderOnly) {
+      if (!options.renderOnly && !options.verify) {
         const parts = [`${result.sent} sent`, `${result.skipped} skipped`];
         if (result.errors > 0) parts.push(`${result.errors} errors`);
         console.log(`  ✅ out complete — ${parts.join(", ")}`);
@@ -588,6 +563,7 @@ for (const [cmd, type, desc] of [
           preview: options.preview,
           date: options.date,
           mode,
+          needsSkillCommand: cmd,
         });
         const parts = [`${result.sent} sent`, `${result.skipped} skipped`];
         if (result.errors > 0) parts.push(`${result.errors} errors`);
@@ -609,6 +585,29 @@ for (const [cmd, type, desc] of [
       }
     });
 }
+
+// ─── doctor 명령 ────────────────────────────────────────
+
+program
+  .command("doctor")
+  .description("Diagnose missing/stale summaries over recent days")
+  .option("--days <n>", "Days to check (default 14)", "14")
+  .action(async (options) => {
+    const storage = new SqlJsAdapter();
+    try {
+      await storage.initialize();
+      const { runDoctor, printDoctorTable } = await import("./core/doctor.js");
+      const rows = await runDoctor(storage, parseInt(options.days, 10) || 14);
+      printDoctorTable(rows);
+    } catch (err) {
+      console.error(
+        `  ❌ ${err instanceof Error ? err.message : String(err)}`,
+      );
+      process.exit(1);
+    } finally {
+      await storage.close();
+    }
+  });
 
 // ─── config 명령 ────────────────────────────────────────
 
@@ -633,6 +632,8 @@ program
   .option("--machine-name <name>", "Machine identifier name")
   .option("--ai-provider <provider>", "AI summary provider (cloudflare | anthropic | claude-code | auto)")
   .option("--pipeline-mode <mode>", "Default pipeline mode for out/outd/outw/outm (full | smart)")
+  .option("--project-weight <args...>", "Set project weight: <path> <high|normal|low|clear>")
+  .option("--project-weights", "List all project weights")
   .option("--setup-d1", "D1 setup wizard")
   .option("--setup", "Run setup wizard")
   .action(async (options) => {
@@ -830,6 +831,40 @@ program
         await storage.setConfig(PIPELINE_MODE_CONFIG_KEY, options.pipelineMode);
         console.log(`  pipeline_mode = ${options.pipelineMode}`);
         changed = true;
+      }
+      if (options.projectWeight) {
+        hasAction = true;
+        const { setProjectWeight, isWeightLevel } = await import("./core/weights.js");
+        const args = options.projectWeight as string[];
+        if (args.length < 2) {
+          console.error("  ❌ Usage: --project-weight <path> <high|normal|low|clear>");
+          process.exit(1);
+        }
+        const path = args[0];
+        const level = args[1];
+        if (level !== "clear" && !isWeightLevel(level)) {
+          console.error(`  ❌ Invalid weight: "${level}" (expected: high | normal | low | clear)`);
+          process.exit(1);
+        }
+        await setProjectWeight(storage, path, level as any);
+        console.log(`  project weight: ${path} = ${level}`);
+        changed = true;
+      }
+      if (options.projectWeights) {
+        hasAction = true;
+        const { getProjectWeights } = await import("./core/weights.js");
+        const weights = await getProjectWeights(storage);
+        const entries = Object.entries(weights);
+        if (entries.length === 0) {
+          console.log("  No project weights configured. All projects render at normal detail.");
+        } else {
+          console.log("\n  Project weights:");
+          for (const [p, w] of entries) {
+            const icon = w === "high" ? "⬆️" : w === "low" ? "⬇️" : "➡️";
+            console.log(`    ${icon} ${w.padEnd(6)} ${p}`);
+          }
+          console.log("");
+        }
       }
       if (options.setupD1) {
         hasAction = true;

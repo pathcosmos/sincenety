@@ -67,17 +67,37 @@ export async function resolveAiProvider(
 }
 
 /**
+ * #2 스킬 필요 신호 — claude-code provider일 때 CLI가 exit 2로 종료하며
+ * Claude Code 스킬이 파싱해서 선행 파이프라인을 수행하도록 구조화된 JSON을 stdout에 출력.
+ *
+ * 스킬은 `{"action":"needs_skill", "command":"outd", "reason":"..."}` 형태를 감지한다.
+ */
+export interface NeedsSkillSignal {
+  action: "needs_skill";
+  command: string;
+  reason: string;
+  provider: AiProvider;
+  hint: string;
+}
+
+export function emitNeedsSkillAndExit(signal: NeedsSkillSignal): never {
+  process.stdout.write(JSON.stringify(signal) + "\n");
+  process.exit(2);
+}
+
+/**
  * CLI/cron 경로에서 AI 요약이 반드시 필요한 파이프라인 진입 시 호출되는 가드.
  * 이 가드를 통과하지 못하면 sincenety 전체 실행을 중단해야 함.
  *
  * - `cloudflare` / `anthropic` (자격 증명 존재) → 통과
- * - `claude-code` → 중단 (이 provider는 /sincenety 슬래시 명령에서만 유효)
- * - 설정 없음(heuristic) → 중단
+ * - `claude-code` → `needsSkillCommand` 지정 시 구조화된 JSON + exit 2, 아니면 throw
+ * - 설정 없음(heuristic) → throw
  *
- * @throws Error with clear remediation message
+ * @param needsSkillCommand CLI 명령명 ("outd" 등) — 지정 시 claude-code일 때 JSON 신호로 종료
  */
 export async function assertAiReadyForCliPipeline(
   storage: StorageAdapter,
+  needsSkillCommand?: string,
 ): Promise<void> {
   const config = await loadAiProviderConfig(storage);
   const provider = detectAiProvider(config);
@@ -90,6 +110,16 @@ export async function assertAiReadyForCliPipeline(
     "  - Anthropic:  `sincenety config --ai-provider anthropic` + ANTHROPIC_API_KEY 환경변수";
 
   if (provider === "claude-code") {
+    if (needsSkillCommand) {
+      emitNeedsSkillAndExit({
+        action: "needs_skill",
+        command: needsSkillCommand,
+        reason:
+          "ai_provider=claude-code requires /sincenety skill to run Claude Code summarization first.",
+        provider,
+        hint,
+      });
+    }
     throw new Error(
       "ai_provider=claude-code는 /sincenety 슬래시 명령에서만 AI 요약이 가능합니다. " +
         "CLI 또는 cron에서 직접 `sincenety`를 실행하려면 Cloudflare 또는 Anthropic을 설정하세요.\n\n" +

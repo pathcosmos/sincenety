@@ -12,6 +12,7 @@ import { renderDailyEmail, type RenderedEmail } from "../email/renderer.js";
 import { sendEmail } from "../email/provider.js";
 import type { SessionData } from "../email/template.js";
 import type { D1Client } from "../cloud/d1-client.js";
+import { padEndW } from "../util/display-width.js";
 
 // ---------------------------------------------------------------------------
 // Pipeline mode — centralized source of truth
@@ -53,6 +54,21 @@ export interface OutOptions {
    * 미지정 시 `pipeline_mode` config 값 → 없으면 "full"
    */
   mode?: PipelineMode;
+  /** #4 --verify: 발송하지 않고 체크리스트만 출력 */
+  verify?: boolean;
+  /** #2 claude-code provider 감지 시 needs_skill JSON으로 종료시킬 CLI 명령명 */
+  needsSkillCommand?: string;
+}
+
+/** #4 verify 체크리스트 항목 */
+export interface VerifyCheck {
+  type: "daily" | "weekly" | "monthly";
+  dateKey: string;
+  summary: "OK" | "MISSING" | "STALE" | "EMAILED";
+  baseline: "OK" | "MISSING";
+  recipient: "OK" | "MISSING";
+  gatherUpdatedAt: number | null;
+  dailyCreatedAt: number | null;
 }
 
 export interface OutResultEntry {
@@ -230,6 +246,40 @@ export function determineReportTypes(
   return Array.from(types);
 }
 
+/** #4 verify 체크리스트 테이블 출력 */
+export function printVerifyTable(checks: VerifyCheck[]): void {
+  const mark = (s: VerifyCheck["summary"] | "OK" | "MISSING") => {
+    if (s === "OK") return "✅ OK";
+    if (s === "STALE") return "⚠️  STALE";
+    if (s === "EMAILED") return "📧 SENT";
+    return "❌ " + s;
+  };
+  console.log("");
+  console.log("  Verify report readiness");
+  console.log("  ┌──────────┬────────────┬────────────┬────────────┬────────────┐");
+  console.log(
+    "  │ Type     │ Date       │ Summary    │ Baseline   │ Recipient  │",
+  );
+  console.log("  ├──────────┼────────────┼────────────┼────────────┼────────────┤");
+  for (const c of checks) {
+    const row =
+      "  │ " +
+      c.type.padEnd(8) +
+      " │ " +
+      c.dateKey.padEnd(10) +
+      " │ " +
+      padEndW(mark(c.summary), 10) +
+      " │ " +
+      padEndW(mark(c.baseline), 10) +
+      " │ " +
+      padEndW(mark(c.recipient), 10) +
+      " │";
+    console.log(row);
+  }
+  console.log("  └──────────┴────────────┴────────────┴────────────┴────────────┘");
+  console.log("");
+}
+
 // ---------------------------------------------------------------------------
 // Main orchestrator
 // ---------------------------------------------------------------------------
@@ -247,10 +297,48 @@ export async function runOut(
   const configured = await storage.getConfig(PIPELINE_MODE_CONFIG_KEY);
   const mode = resolvePipelineMode(options?.mode, configured);
 
+  // #4 verify 모드: circle 없이 체크리스트만
+  if (options?.verify) {
+    const today = options?.date ? parseDateArg(options.date) : new Date();
+    const types: Array<"daily" | "weekly" | "monthly"> = options?.force
+      ? [options.force]
+      : ["daily", "weekly", "monthly"];
+    const checks: VerifyCheck[] = [];
+    const recipient = (await storage.getConfig("email")) ? "OK" : "MISSING";
+    for (const type of types) {
+      const dateKey = getReportDateKey(type, today);
+      const f = await storage.getDailyReportFreshness(dateKey, type);
+      let summary: VerifyCheck["summary"];
+      if (!f || !f.hasDailyReport) summary = "MISSING";
+      else if (f.emailed) summary = "EMAILED";
+      else if (f.stale) summary = "STALE";
+      else summary = "OK";
+      checks.push({
+        type,
+        dateKey,
+        summary,
+        baseline: f?.hasDailyReport || f?.hasGatherReport ? "OK" : "MISSING",
+        recipient,
+        gatherUpdatedAt: f?.gatherUpdatedAt ?? null,
+        dailyCreatedAt: f?.dailyCreatedAt ?? null,
+      });
+    }
+    printVerifyTable(checks);
+    // verify는 발송하지 않으므로 result는 entries만 채움 (skipped로 처리)
+    for (const c of checks) {
+      result.entries.push({ type: c.type, dateKey: c.dateKey, status: "previewed" });
+    }
+    return result;
+  }
+
   // 2. circle 실행으로 데이터 최신화
   // full 모드: daily + weekly/monthly baseline 재생성 (발송본은 보호)
   // smart 모드: daily만 (기존 동작)
-  const circleResult = await runCircle(storage, { scope: options?.scope, mode });
+  const circleResult = await runCircle(storage, {
+    scope: options?.scope,
+    mode,
+    needsSkillCommand: options?.needsSkillCommand,
+  });
   const failedAutoSummaryTypes = new Set(
     circleResult.summaryErrors.map((e) => e.type),
   );
@@ -325,6 +413,18 @@ export async function runOut(
     // (에러 entry는 이미 2.5 단계에서 early 수집되었음 — 중복 기록 안 함)
     if (reportType !== "daily" && failedAutoSummaryTypes.has(reportType)) {
       continue;
+    }
+
+    // #1 신선도 가드 — 요약이 원본보다 오래됐고 아직 발송 안 된 경우 경고 로그
+    // (발송은 계속 진행하되 사용자가 감지 가능하게 하며, cron에서도 경고가 남는다)
+    const freshness = await storage.getDailyReportFreshness(dateKey, reportType);
+    if (freshness?.stale && !freshness.emailed) {
+      console.warn(
+        `  ⚠️  [${reportType}] ${dateKey} summary is stale ` +
+          `(gather updated ${new Date(freshness.gatherUpdatedAt!).toISOString()} > ` +
+          `summary ${new Date(freshness.dailyCreatedAt!).toISOString()}) — ` +
+          `run \`sincenety circle --rerun ${dateKey}\` to refresh.`,
+      );
     }
 
     // 3.1. 크로스 디바이스: 다른 기기의 세션 데이터 수집 (발신은 항상 수행)
