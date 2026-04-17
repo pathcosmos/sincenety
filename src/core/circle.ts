@@ -205,10 +205,9 @@ export async function finalizePreviousReports(
 /**
  * air 실행 후 변경된 날짜의 세션 JSON을 추출하여 반환.
  *
- * v0.8.8: 변경된 날짜 외에 **이번 주(월~오늘)** + **이번 달(1일~오늘)** 범위의
- * gather 데이터가 있는 모든 날짜를 추가로 포함한다. skill이 매 실행마다
- * 해당 주/달의 daily를 재요약하고, 이를 기반으로 weekly/monthly 보고서를
- * 다시 생성할 수 있도록 하는 게 목적 (사용자 요구 사항).
+ * v0.8.9: 강제 재요약 범위를 **이번 주(월~오늘)**로 한정. 이전에는 이번 달까지
+ * 포함했지만 매 실행마다 수십 일을 재요약하느라 출력/토큰 소비가 과도했다.
+ * monthly 보고서는 발송 시점(월말)에 별도 경로로 갱신한다.
  */
 export async function circleJson(
   storage: StorageAdapter,
@@ -217,11 +216,9 @@ export async function circleJson(
   const airResult = await runAir(storage, options);
   await finalizePreviousReports(storage, new Date());
 
-  // 변경 감지된 날짜 ∪ 이번 주(월~오늘) ∪ 이번 달(1일~오늘)
+  // 변경 감지된 날짜 ∪ 이번 주(월~오늘)
   const today = new Date();
-  const weekDates = datesInCurrentWeekUpToToday(today);
-  const monthDates = datesInCurrentMonthUpToToday(today);
-  const forcedDates = new Set<string>([...weekDates, ...monthDates]);
+  const forcedDates = new Set<string>(datesInCurrentWeekUpToToday(today));
 
   // gather 데이터가 있는 날짜만 유지 (빈 날은 드롭)
   const forcedWithData: string[] = [];
@@ -312,18 +309,6 @@ function datesInCurrentWeekUpToToday(today: Date): string[] {
   const { monday } = getWeekBoundary(today);
   const [my, mm, md] = monday.split("-").map(Number);
   const start = new Date(my, mm - 1, md);
-  const dates: string[] = [];
-  const cursor = new Date(start);
-  while (cursor <= today) {
-    dates.push(toDateStr(cursor));
-    cursor.setDate(cursor.getDate() + 1);
-  }
-  return dates;
-}
-
-/** 이번 달 1일부터 오늘까지의 YYYY-MM-DD 날짜 목록. */
-function datesInCurrentMonthUpToToday(today: Date): string[] {
-  const start = new Date(today.getFullYear(), today.getMonth(), 1);
   const dates: string[] = [];
   const cursor = new Date(start);
   while (cursor <= today) {
@@ -484,13 +469,13 @@ export async function autoSummarize(
   for (const date of changedDates) {
     // 이미 요약된 날짜 처리:
     //   - 발송 완료면 보호 (절대 덮어쓰지 않음)
-    //   - forceDates에 포함되면 freshness 무관 재요약 (이번 주/달 항상 최신화)
+    //   - forceDates에 포함되면 freshness 무관 재요약 (이번 주 항상 최신화)
     //   - 아니면 stale일 때만 재요약
     const existingReport = await storage.getDailyReport(date, "daily");
     if (existingReport?.summaryJson) {
       if (existingReport.emailedAt != null) continue;
       if (forceDates?.has(date)) {
-        console.log(`  ♻️  ${date} re-summarizing (current week/month — forced refresh)`);
+        console.log(`  ♻️  ${date} re-summarizing (current week — forced refresh)`);
       } else {
         const freshness = await storage.getDailyReportFreshness(date, "daily");
         if (freshness && !freshness.stale) continue;
@@ -639,24 +624,22 @@ export async function runCircle(
 
   const airResult = await runAir(storage, options);
 
-  // v0.8.8: 매 실행 시 이번 주(월~오늘) + 이번 달(1일~오늘) daily 강제 재요약.
+  // v0.8.9: 매 실행 시 **이번 주(월~오늘)** daily만 강제 재요약 (월 단위 제거).
+  // 매 실행마다 이번 달 전체를 재요약하느라 토큰/시간 소비가 과도했던 문제를 해소.
   // gather 데이터가 있는 날짜만 대상. 발송 완료된 daily는 autoSummarize 내부에서 보호.
   const today = new Date();
-  const forcedWeekMonth = new Set<string>();
-  for (const d of [
-    ...datesInCurrentWeekUpToToday(today),
-    ...datesInCurrentMonthUpToToday(today),
-  ]) {
+  const forcedThisWeek = new Set<string>();
+  for (const d of datesInCurrentWeekUpToToday(today)) {
     const g = await storage.getGatherReportByDate(d);
-    if (g?.reportJson) forcedWeekMonth.add(d);
+    if (g?.reportJson) forcedThisWeek.add(d);
   }
 
-  // rerun 무효화 날짜 + 이번 주/달 daily를 changedDates에 병합
+  // rerun 무효화 날짜 + 이번 주 daily를 changedDates에 병합
   const allChanged = Array.from(
     new Set<string>([
       ...airResult.changedDates,
       ...rerunDates,
-      ...forcedWeekMonth,
+      ...forcedThisWeek,
     ]),
   );
   const finalized = await finalizePreviousReports(storage, today);
@@ -668,7 +651,7 @@ export async function runCircle(
     const { assertAiReadyForCliPipeline } = await import("./ai-provider.js");
     await assertAiReadyForCliPipeline(storage, options?.needsSkillCommand);
 
-    const summarized = await autoSummarize(storage, allChanged, forcedWeekMonth);
+    const summarized = await autoSummarize(storage, allChanged, forcedThisWeek);
     if (summarized > 0) {
       console.log(`  🤖 ${summarized} day(s) summarized`);
     }

@@ -204,7 +204,7 @@ Cloudflare D1을 통한 멀티머신 데이터 통합:
 
 - **Skill 경로로만 생성**: weekly/monthly row는 **오직** `/sincenety` 스킬이 `circle --save --type weekly|monthly`를 통해 만듭니다. Claude Code가 해당 기간의 daily 요약 전체를 맥락으로 삼아 고품질 요약을 작성한 뒤 저장 — CLI가 자체적으로 주간/월간 내용을 만들어내지 않습니다.
 - **`outw` / `outm` 에러 계약**: 대상 row가 없거나 `sessions` 배열이 비어 있으면 `runOut`이 `skipped`가 아닌 **명확한 에러**를 냅니다 (`"weekly report row for <date> not found. Run /sincenety to generate..."`). cron은 exit code 1로 감지.
-- **매 실행 시 이번 주/달 daily 재요약**: `runCircle`은 이번 주(월~오늘) + 이번 달(1일~오늘)의 daily를 `gather_reports.data_hash` 변경 여부와 무관하게 강제로 재요약합니다. 이후 skill이 주간/월간을 재생성할 때 항상 최신 daily 기반으로 작업할 수 있도록 보장.
+- **매 실행 시 이번 주 daily 재요약** (v0.8.9): `runCircle`은 이번 주(월~오늘)의 daily를 `gather_reports.data_hash` 변경 여부와 무관하게 매번 강제로 재요약합니다. v0.8.8에서는 이번 달까지 함께 강제 재요약했지만 매 실행마다 출력이 너무 길고 토큰 소비가 과도해, v0.8.9에서 월 단위는 제외. monthly row는 월말 또는 필요 시 skill 경로에서만 갱신합니다.
 - **발송본 보호 유지**: `emailedAt != null`인 daily/weekly/monthly row는 위 강제 refresh 규칙에서도 덮어쓰이지 않습니다.
 - **제거된 설정/플래그**: `pipeline_mode` config 키와 `--mode` / `--pipeline-mode` CLI 플래그 삭제. `--pipeline-mode`는 한 줄 deprecation 경고만 출력하고 아무 동작도 하지 않음.
 
@@ -722,7 +722,7 @@ $ sincenety [--token T --key K --email E]
 
 1. **멱등성(Idempotency) 경계** — `sincenety`는 하루에 여러 번 실행되는 패턴(크론 10:00, 수동 15:00, 자동 일 마감)을 전제로 설계됨. `sessions`의 복합 PK `(session_id, project)`와 `daily_reports`의 `UNIQUE(report_date, report_type)` 제약이 모든 재실행을 안전하게 만듦. DB가 없다면 (a) 매 실행마다 중복 리포트/중복 이메일이 생기거나 (b) 별도 dedupe 인덱스를 디스크에 직접 유지해야 함 — 후자는 결국 "제대로 안 만든 DB"에 불과.
 
-2. **발송 상태의 유일한 권위(authority)** — `daily_reports.emailed_at`이 "이 리포트가 이미 발송됐는가?"에 대한 단일 진실 공급원. `circle.ts`의 `autoSummarize`와 `circleSave` 전반에서 `emailedAt != null`인 row는 덮어쓰기로부터 명시적으로 보호됨 — v0.8.8의 "이번 주/달 매번 강제 재요약" 규칙 하에서도 동일. `email_logs`는 append-only 감사 로그로서, 성공·실패 발송 전부가 subject/recipient/provider/error와 함께 기록됨.
+2. **발송 상태의 유일한 권위(authority)** — `daily_reports.emailed_at`이 "이 리포트가 이미 발송됐는가?"에 대한 단일 진실 공급원. `circle.ts`의 `autoSummarize`와 `circleSave` 전반에서 `emailedAt != null`인 row는 덮어쓰기로부터 명시적으로 보호됨 — v0.8.9의 "이번 주 매번 강제 재요약" 규칙(이전 v0.8.8의 "이번 주/달" 규칙) 하에서도 동일. `email_logs`는 append-only 감사 로그로서, 성공·실패 발송 전부가 subject/recipient/provider/error와 함께 기록됨.
 
 3. **크로스 디바이스 머지의 피봇(pivot)** — `sync push`(발송 전)가 이 기기의 `daily_reports` 행들을 Cloudflare D1로 업로드하고, `sync pull`이 다른 기기들이 작성한 행을 내려받음. 이메일 렌더러의 머지 로직은 로컬 행과 pull한 행을 `(report_date, project_name)` 기준으로 조인하고 세션은 `(project_name, title_normalized)`로 dedupe. 로컬 DB가 없으면 "이 기기의 시점(view)"이란 개념 자체가 성립하지 않아 push 불가, 원격 행을 merge할 안정적 피봇도 없음.
 
@@ -995,6 +995,37 @@ npx .                # 현재 디렉토리를 npx로 실행
 ---
 
 ## 개발 이력
+
+### v0.8.9 (2026-04-17) — 강제 재요약 범위 축소: 이번 주/달 → 이번 주만
+
+#### 배경
+
+v0.8.8에서 `runCircle`이 매 실행마다 **이번 주(월~오늘) + 이번 달(1일~오늘)** daily를 모두 강제 재요약하도록 했지만, 실제로는 `/sincenety` 기본 실행 한 번에 `♻️ <date> re-summarizing` 라인이 20개 이상 출력되고 변경되지 않은 dailies까지 Workers AI 호출을 소비하는 문제가 있었음. 사용자 피드백 그대로: _"이건 너무 지금 길잖아, 토큰 소비도 많을테구"_ — 그리고 2026-04-17 시점에 2026-04-02 ~ 2026-04-09까지 줄줄이 재요약되는 실제 터미널 로그가 첨부됨.
+
+#### 변경
+
+- **`runCircle`**: 강제 재요약 대상 집합을 **이번 주만**(`forcedThisWeek`)으로 축소 (이전 `forcedWeekMonth`). 주석과 변수명 모두 좁혀진 범위를 반영.
+- **`circleJson`** (skill `--json` 경로): 동일 축소 — skill 클라이언트는 이제 "이번 주 ∪ 변경된 날짜"만 보게 되며, 이전의 "이번 주 ∪ 이번 달 ∪ 변경된 날짜"는 폐기.
+- **로그 메시지**: `♻️ <date> re-summarizing (current week/month — forced refresh)` → `... (current week — forced refresh)`.
+- **데드코드 제거**: `datesInCurrentMonthUpToToday` 헬퍼를 `src/core/circle.ts`에서 삭제 (호출처 없음).
+- **발송본 보호 불변식 유지**: `autoSummarize` 내부의 `emailedAt != null` 가드는 그대로 — 이미 발송된 dailies는 여전히 덮어쓰기로부터 안전. 지난 주 stale daily는 기존 freshness 경로에서 평소대로 재요약되며, **무조건 재요약하는 루프만** 좁아짐.
+- **monthly 요약**: 매 실행마다 hot 상태로 유지하지 않음. 월말 또는 필요 시 skill 경로(`circle --rerun YYYY-MM-DD`)에서 갱신.
+
+#### 변경 파일
+
+- `src/core/circle.ts` — `runCircle`/`circleJson` 범위 축소, `datesInCurrentMonthUpToToday` 삭제, 로그·주석 수정
+- `src/cli.ts` — 버전 0.8.9
+- `package.json` — `0.8.8` → `0.8.9`
+- `README.md` / `README.ko.md` — changelog + 본문 교차 참조 업데이트
+
+#### 호환성
+
+- DB 스키마 변경 없음 (여전히 v4).
+- CLI 플래그 변경 없음 — 기본 동작의 범위만 좁아짐.
+- `outd` / `outw` / `outm` 동작 변경 없음 — force 타입은 자체 경로로 트리거됨.
+- 특정 과거 daily를 다시 요약해야 하면 `circle --rerun YYYY-MM-DD`가 명시적 escape hatch로 그대로 사용 가능.
+
+---
 
 ### v0.8.8 (2026-04-17) — 휴리스틱 주간/월간 baseline 제거 + DB atomic write + 렌더러 버그 수정
 

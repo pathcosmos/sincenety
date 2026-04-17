@@ -205,7 +205,7 @@ Multi-machine data aggregation via Cloudflare D1:
 
 - **Skill-only generation**: weekly/monthly rows are created **exclusively** via `circle --save --type weekly|monthly` from the `/sincenety` skill. Claude Code inside the skill writes the summary using the full set of daily summaries as context, then saves it. CLI no longer invents weekly/monthly content.
 - **`outw` / `outm` error contract**: if the target row is missing or has an empty `sessions` array, `runOut` emits a precise error (`"weekly report row for <date> not found. Run /sincenety to generate..."`) instead of silently skipping. cron detects via exit code 1.
-- **Every-run current-period refresh**: `runCircle` now forces a re-summary of the current week (Mon–today) and current month (1st–today) **dailies**, even when the `gather_reports.data_hash` is unchanged. This guarantees that when the skill later rebuilds weekly/monthly, it has the latest daily content.
+- **Every-run current-week refresh** (v0.8.9): `runCircle` forces a re-summary of the current week (Mon–today) **dailies** every run, even when `gather_reports.data_hash` is unchanged. v0.8.8 also re-ran the entire current month every time, but that produced very long output and high token cost on each invocation; the month scope was dropped in v0.8.9. Monthly rows are now refreshed only via the skill at month-end / on demand.
 - **Emailed-row protection preserved**: `emailedAt != null` still protects daily/weekly/monthly rows from overwrite, even under the forced-refresh rule above.
 - **Removed config/flags**: `pipeline_mode` config key and `--mode` / `--pipeline-mode` CLI flags are gone. The `--pipeline-mode` flag now emits a one-line deprecation warning and does nothing.
 
@@ -729,7 +729,7 @@ The local DB is a **derived artifact** — the source of truth is always `~/.cla
 
 1. **Idempotency boundary** — `sincenety` is designed to be run multiple times per day (cron at 10:00, manual at 15:00, auto at end-of-day). The composite PK `(session_id, project)` on `sessions` and the `UNIQUE(report_date, report_type)` on `daily_reports` make every run safely re-runnable. Without the DB, either (a) each run produces a duplicate report row/email or (b) a bespoke dedupe index must be maintained on disk — which is just "a DB, worse".
 
-2. **Send-state authority** — `daily_reports.emailed_at` is the single source of truth for "was this report already delivered?" Throughout `autoSummarize` and `circleSave` (circle.ts), rows with `emailedAt != null` are explicitly protected from overwrite — even under v0.8.8's force-refresh-this-week-and-month rule. `email_logs` is the append-only audit trail: every successful and failed send lands there with subject, recipient, provider, and error message.
+2. **Send-state authority** — `daily_reports.emailed_at` is the single source of truth for "was this report already delivered?" Throughout `autoSummarize` and `circleSave` (circle.ts), rows with `emailedAt != null` are explicitly protected from overwrite — even under v0.8.9's force-refresh-this-week rule (and v0.8.8's wider this-week-and-month rule before it). `email_logs` is the append-only audit trail: every successful and failed send lands there with subject, recipient, provider, and error message.
 
 3. **Cross-device merge pivot** — `sync push` (pre-send) uploads this machine's `daily_reports` rows to Cloudflare D1; `sync pull` downloads rows authored by other machines. The merge in the email renderer joins local rows with pulled rows by `(report_date, project_name)` and dedupes sessions by `(project_name, title_normalized)`. Without a local DB, there is no "this machine's view" to push, and no stable pivot to merge remote rows into.
 
@@ -964,6 +964,37 @@ node dist/cli.js     # Direct execution
 ---
 
 ## Changelog
+
+### v0.8.9 (2026-04-17) — Force-refresh scope reduced from this-week-and-month to this-week-only
+
+#### Why
+
+v0.8.8 made `runCircle` re-summarize **the current week (Mon–today) + the current month (1st–today)** on every invocation. In practice that meant the `/sincenety` default run printed twenty-plus `♻️ <date> re-summarizing` lines each time and burned Workers AI calls on dailies that hadn't actually changed. User feedback was direct: _"이건 너무 지금 길잖아, 토큰 소비도 많을테구"_ — and was followed by a real terminal log showing all of 2026-04-02 → 2026-04-09 being re-summarized at 2026-04-17.
+
+#### Change
+
+- **`runCircle`**: forced-refresh date set is now **this week only** (`forcedThisWeek`), not `forcedWeekMonth`. The function-level comment and the variable name both reflect the narrower scope.
+- **`circleJson`** (skill `--json` path): same narrowing — skill clients now see "this week ∪ changed dates" instead of "this week ∪ this month ∪ changed dates".
+- **Log line**: `♻️ <date> re-summarizing (current week/month — forced refresh)` → `... (current week — forced refresh)`.
+- **Removed dead code**: `datesInCurrentMonthUpToToday` helper deleted from `src/core/circle.ts` (no remaining call sites).
+- **Emailed-row protection unchanged**: the `emailedAt != null` guard inside `autoSummarize` is untouched, so already-sent dailies remain immune to overwrite. Stale (non-forced) dailies from previous weeks still get re-summarized on the existing freshness path; only the *unconditional* daily re-summary loop was narrowed.
+- **Monthly summaries**: no longer kept hot every run. They refresh via the skill at month-end or on demand (`circle --rerun YYYY-MM-DD`).
+
+#### Files changed
+
+- `src/core/circle.ts` — `runCircle` and `circleJson` scope reduction; remove `datesInCurrentMonthUpToToday`; log message + comment edits
+- `src/cli.ts` — version bump to 0.8.9
+- `package.json` — `0.8.8` → `0.8.9`
+- `README.md` / `README.ko.md` — changelog + cross-reference updates in body sections
+
+#### Compatibility
+
+- No DB schema change (still v4).
+- No CLI flag changes; default behavior is just narrower in scope.
+- No behavior change for `outd` / `outw` / `outm`; their forced types still trigger their own paths.
+- `circle --rerun YYYY-MM-DD` remains the explicit escape hatch when you need to re-summarize a specific older daily.
+
+---
 
 ### v0.8.8 (2026-04-17) — Heuristic weekly/monthly baseline removed + atomic DB write + renderer fix
 
