@@ -8,7 +8,6 @@
 import type { StorageAdapter, DailyReport } from "../storage/adapter.js";
 import { runAir, type AirOptions, type AirResult } from "./air.js";
 import type { CfAiConfig } from "../cloud/cf-ai.js";
-import type { PipelineMode } from "./out.js";
 
 // ---------------------------------------------------------------------------
 // Text cleaning for claude-code JSON output (mirrors summarizer.ts clean())
@@ -89,102 +88,20 @@ export interface CircleSaveInput {
 }
 
 // ---------------------------------------------------------------------------
-// mergeSummariesByTitle — 동일 프로젝트+제목 세션 통합 요약
+// (삭제됨) mergeSummariesByTitle — 휴리스틱 텍스트 결합 (outcomes.join("\n"),
+// flows.join(" → "))으로 같은 프로젝트 여러 세션을 하나로 이어붙이던 함수.
+// v0.8.8에서 제거. 같은 프로젝트 여러 세션은 각각 독립 카드로 보여준다 —
+// AI로 생성된 개별 세션 요약의 신뢰성을 그대로 유지한다.
 // ---------------------------------------------------------------------------
 
-/** 제목 정규화: 소문자, 공백 정리, 프로젝트명 접미사/슬래시 커맨드 제거 */
-function normalizeTitle(title: string, projectName: string): string {
-  let t = title.toLowerCase().trim();
-  const pn = projectName.toLowerCase();
-  if (pn && t.endsWith(pn)) {
-    t = t.slice(0, -pn.length).trim();
-  }
-  t = t.replace(/^\/\S+\s*/, "").trim();
-  t = t.replace(/\s+/g, " ");
-  return t;
-}
-
-export interface MergedSummary extends CircleSaveSessionInput {
+/** 세션 메타데이터를 포함한 요약 형태 (daily/weekly/monthly 공통). */
+export interface SessionSummary extends CircleSaveSessionInput {
   messageCount?: number;
   totalTokens?: number;
   inputTokens?: number;
   outputTokens?: number;
   durationMinutes?: number;
   model?: string;
-  mergedCount?: number;
-}
-
-/**
- * 동일 프로젝트 세션을 머지하여 프로젝트별 1개 항목으로 통합한다.
- * - projectName 기준 그룹핑
- * - 2+ 그룹: 통계 합산, flow " → " 연결, significance 최장 채택
- * - 제목에 "(×N)" 표시
- */
-export function mergeSummariesByTitle(sessions: MergedSummary[]): MergedSummary[] {
-  if (sessions.length <= 1) return sessions;
-
-  const groups = new Map<string, MergedSummary[]>();
-  for (const s of sessions) {
-    const key = s.projectName ?? "";
-    const group = groups.get(key);
-    if (group) {
-      group.push(s);
-    } else {
-      groups.set(key, [s]);
-    }
-  }
-
-  const merged: MergedSummary[] = [];
-
-  for (const group of groups.values()) {
-    if (group.length === 1) {
-      merged.push(group[0]);
-      continue;
-    }
-
-    const first = group[0];
-    const last = group[group.length - 1];
-    const n = group.length;
-
-    // flow: 각 세션의 flow를 " → "로 연결
-    const flows = group
-      .map((s) => s.flow)
-      .filter((f): f is string => !!f && f.length > 0);
-
-    // significance: 가장 긴 것 채택
-    let longestSig = "";
-    for (const s of group) {
-      if ((s.significance?.length ?? 0) > longestSig.length) {
-        longestSig = s.significance ?? "";
-      }
-    }
-
-    // outcome: 줄바꿈으로 연결
-    const outcomes = group
-      .map((s) => s.outcome)
-      .filter((o): o is string => !!o && o.length > 0);
-
-    const m: MergedSummary = {
-      sessionId: first.sessionId,
-      projectName: first.projectName,
-      topic: `${first.topic} (×${n})`,
-      outcome: outcomes.join("\n"),
-      flow: flows.join(" → "),
-      significance: longestSig,
-      nextSteps: last.nextSteps,
-      messageCount: group.reduce((sum, s) => sum + (s.messageCount ?? 0), 0),
-      totalTokens: group.reduce((sum, s) => sum + (s.totalTokens ?? 0), 0),
-      inputTokens: group.reduce((sum, s) => sum + (s.inputTokens ?? 0), 0),
-      outputTokens: group.reduce((sum, s) => sum + (s.outputTokens ?? 0), 0),
-      durationMinutes: group.reduce((sum, s) => sum + (s.durationMinutes ?? 0), 0),
-      model: first.model,
-      mergedCount: n,
-    };
-
-    merged.push(m);
-  }
-
-  return merged;
 }
 
 // ---------------------------------------------------------------------------
@@ -287,6 +204,11 @@ export async function finalizePreviousReports(
 
 /**
  * air 실행 후 변경된 날짜의 세션 JSON을 추출하여 반환.
+ *
+ * v0.8.8: 변경된 날짜 외에 **이번 주(월~오늘)** + **이번 달(1일~오늘)** 범위의
+ * gather 데이터가 있는 모든 날짜를 추가로 포함한다. skill이 매 실행마다
+ * 해당 주/달의 daily를 재요약하고, 이를 기반으로 weekly/monthly 보고서를
+ * 다시 생성할 수 있도록 하는 게 목적 (사용자 요구 사항).
  */
 export async function circleJson(
   storage: StorageAdapter,
@@ -295,9 +217,26 @@ export async function circleJson(
   const airResult = await runAir(storage, options);
   await finalizePreviousReports(storage, new Date());
 
+  // 변경 감지된 날짜 ∪ 이번 주(월~오늘) ∪ 이번 달(1일~오늘)
+  const today = new Date();
+  const weekDates = datesInCurrentWeekUpToToday(today);
+  const monthDates = datesInCurrentMonthUpToToday(today);
+  const forcedDates = new Set<string>([...weekDates, ...monthDates]);
+
+  // gather 데이터가 있는 날짜만 유지 (빈 날은 드롭)
+  const forcedWithData: string[] = [];
+  for (const d of forcedDates) {
+    const g = await storage.getGatherReportByDate(d);
+    if (g?.reportJson) forcedWithData.push(d);
+  }
+
+  const allDates = Array.from(
+    new Set<string>([...airResult.changedDates, ...forcedWithData]),
+  ).sort();
+
   const sessions: Record<string, unknown[]> = {};
 
-  for (const dateStr of airResult.changedDates) {
+  for (const dateStr of allDates) {
     const gatherReport = await storage.getGatherReportByDate(dateStr);
     if (gatherReport && gatherReport.reportJson) {
       try {
@@ -313,17 +252,17 @@ export async function circleJson(
   // claude-code 경로: conversationTurns 전처리 (clean + filter + truncate + 30턴 제한)
   // --summarize 시에는 Workers AI가 자체 전처리하므로 스킵
   if (!options?.summarize) {
-    for (const dateStr of airResult.changedDates) {
+    for (const dateStr of allDates) {
       const dateSessions = sessions[dateStr] as any[];
       if (!dateSessions?.length) continue;
       for (const s of dateSessions) {
         if (s.conversationTurns?.length) {
           s.conversationTurns = preprocessTurnsForClaudeCode(s.conversationTurns);
         }
-        // SKILL.md용 머지 그룹 힌트
+        // SKILL.md용 머지 그룹 힌트 — 같은 프로젝트 내 유사 세션 판별
         const project = s.projectName ?? "";
-        const topic = s.title ?? s.summary ?? "";
-        s.mergeGroup = `${project}::${normalizeTitle(topic, project)}`;
+        const topic = (s.title ?? s.summary ?? "").toLowerCase().trim().replace(/\s+/g, " ");
+        s.mergeGroup = `${project}::${topic}`;
       }
     }
   }
@@ -337,7 +276,7 @@ export async function circleJson(
       const { summarizeSession: cfSummarize, generateOverview } = await import("../cloud/cf-ai.js");
       const cfConfig: CfAiConfig = { accountId: aiConfig.accountId, apiToken: aiConfig.apiToken };
 
-      for (const dateStr of airResult.changedDates) {
+      for (const dateStr of allDates) {
         const dateSessions = sessions[dateStr] as any[];
         if (!dateSessions?.length) continue;
 
@@ -363,9 +302,35 @@ export async function circleJson(
   }
 
   return {
-    dates: airResult.changedDates,
+    dates: allDates,
     sessions,
   };
+}
+
+/** 이번 주 월요일부터 오늘까지의 YYYY-MM-DD 날짜 목록. */
+function datesInCurrentWeekUpToToday(today: Date): string[] {
+  const { monday } = getWeekBoundary(today);
+  const [my, mm, md] = monday.split("-").map(Number);
+  const start = new Date(my, mm - 1, md);
+  const dates: string[] = [];
+  const cursor = new Date(start);
+  while (cursor <= today) {
+    dates.push(toDateStr(cursor));
+    cursor.setDate(cursor.getDate() + 1);
+  }
+  return dates;
+}
+
+/** 이번 달 1일부터 오늘까지의 YYYY-MM-DD 날짜 목록. */
+function datesInCurrentMonthUpToToday(today: Date): string[] {
+  const start = new Date(today.getFullYear(), today.getMonth(), 1);
+  const dates: string[] = [];
+  const cursor = new Date(start);
+  while (cursor <= today) {
+    dates.push(toDateStr(cursor));
+    cursor.setDate(cursor.getDate() + 1);
+  }
+  return dates;
 }
 
 /**
@@ -453,157 +418,13 @@ export async function circleSave(
 }
 
 // ---------------------------------------------------------------------------
-// autoSummarizeWeekly / autoSummarizeMonthly
+// (삭제됨) 휴리스틱 주간/월간 baseline 경로
 // ---------------------------------------------------------------------------
-
-/**
- * 주어진 날짜 범위의 daily_reports를 모아서 weekly/monthly row로 upsert.
- *
- * - 해당 기간의 daily 리포트 수집
- * - summaryJson 내 세션들을 flatten
- * - mergeSummariesByTitle로 프로젝트 단위 통합
- * - 집계(totalMessages, totalTokens, sessionCount)
- * - 기존 row가 emailedAt != null이면 스킵 (발송된 보고서 보호)
- * - 기존 row가 미발송이면 덮어쓰기 (upsert)
- *
- * 두 호출자(autoSummarizeWeekly/Monthly)가 `today`로부터 range를 파생하므로,
- * `today`는 구조적으로 항상 [rangeFrom, rangeTo] 안. status는 항상 "in_progress"이며
- * 기간 종료 후 `finalizePreviousReports`가 별도로 "finalized"로 전환한다.
- *
- * overview는 baseline heuristic (topic 나열). Claude Code가 SKILL.md 흐름으로
- * 고품질 overview를 덮어쓰기 전까지 최소 수준의 요약을 보장한다.
- */
-async function summarizeRangeInto(
-  storage: StorageAdapter,
-  type: "weekly" | "monthly",
-  rangeFrom: string, // YYYY-MM-DD inclusive
-  rangeTo: string,   // YYYY-MM-DD inclusive
-  reportDate: string, // weekly=monday, monthly=1st
-): Promise<boolean> {
-  // 1. 기존 발송된 보고서면 건드리지 않음
-  // emailedAt 필드가 존재(= not null)하기만 하면 발송된 것으로 간주.
-  // 단순 `existing?.emailedAt` 체크는 emailedAt === 0에 대해 falsy로 빠져
-  // 덮어쓰기 사고 가능성이 있어 명시적 null 비교 사용.
-  const existing = await storage.getDailyReport(reportDate, type);
-  if (existing && existing.emailedAt != null) return false;
-
-  // 2. 기간 내 daily 리포트 모음
-  const dailies = await storage.getDailyReportsByRange(rangeFrom, rangeTo, "daily");
-  if (dailies.length === 0) return false;
-
-  // 3. 모든 daily의 summaryJson을 flatten
-  // JSON.parse 실패는 경고로 드러내되(언더카운트가 조용히 발생하지 않도록),
-  // 다른 예외는 bare catch로 숨기지 말고 re-throw.
-  const allSessions: MergedSummary[] = [];
-  for (const d of dailies) {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(d.summaryJson || "[]");
-    } catch (err) {
-      if (err instanceof SyntaxError) {
-        console.warn(
-          `  ⚠️  ${type} aggregation: skipping daily ${d.reportDate} — summaryJson JSON parse failed: ${err.message}`,
-        );
-        continue;
-      }
-      throw err;
-    }
-    if (!Array.isArray(parsed)) continue;
-    for (const s of parsed as Array<Record<string, unknown>>) {
-      allSessions.push({
-        sessionId: (s.sessionId as string) ?? "",
-        projectName: (s.projectName as string) ?? "",
-        topic: (s.topic as string) ?? "",
-        outcome: (s.outcome as string) ?? "",
-        flow: (s.flow as string) ?? "",
-        significance: (s.significance as string) ?? "",
-        nextSteps: (s.nextSteps as string) ?? "",
-        messageCount: (s.messageCount as number) ?? 0,
-        totalTokens: (s.totalTokens as number) ?? 0,
-        inputTokens: (s.inputTokens as number) ?? 0,
-        outputTokens: (s.outputTokens as number) ?? 0,
-        durationMinutes: (s.durationMinutes as number) ?? 0,
-        model: (s.model as string) ?? "",
-      });
-    }
-  }
-
-  if (allSessions.length === 0) return false;
-
-  // 4. 프로젝트 단위 통합 (이미 daily 내부에서 머지됐더라도, 다른 일자의 같은 프로젝트를 합침)
-  const mergedSessions = mergeSummariesByTitle(allSessions);
-
-  // 5. 집계
-  const totalMessages = mergedSessions.reduce((s, m) => s + (m.messageCount ?? 0), 0);
-  const totalTokens = mergedSessions.reduce((s, m) => s + (m.totalTokens ?? 0), 0);
-
-  // 6. 기간 경계 타임스탬프
-  const [fy, fm, fd] = rangeFrom.split("-").map(Number);
-  const [ty, tm, td] = rangeTo.split("-").map(Number);
-  const periodFrom = new Date(fy, fm - 1, fd, 0, 0, 0, 0).getTime();
-  const periodTo = new Date(ty, tm - 1, td, 23, 59, 59, 999).getTime();
-
-  // 7. status — 호출자가 today로부터 range를 파생하므로 항상 in_progress.
-  // 기간 종료 후 전환은 `finalizePreviousReports`가 담당한다.
-  const status = "in_progress";
-
-  // 8. overview (heuristic baseline — SKILL.md가 덮어쓸 수 있음)
-  const typeLabel = type === "weekly" ? "주간" : "월간";
-  const topics = mergedSessions.map((s) => s.topic).filter(Boolean);
-  const overview = topics.length > 0
-    ? `${reportDate} ${typeLabel} 요약 초안: ${topics.join(", ")}`
-    : null;
-
-  const report: DailyReport = {
-    reportDate,
-    reportType: type,
-    periodFrom,
-    periodTo,
-    sessionCount: mergedSessions.length,
-    totalMessages,
-    totalTokens,
-    summaryJson: JSON.stringify(mergedSessions),
-    overview,
-    reportMarkdown: null,
-    createdAt: Date.now(),
-    emailedAt: null,
-    emailTo: null,
-    status,
-    progressLabel: null,
-    dataHash: null,
-  };
-
-  await storage.saveDailyReport(report);
-  return true;
-}
-
-/**
- * 이번 주(월~일)의 daily_reports를 모아서 weekly row로 upsert.
- * 발송된 weekly는 건드리지 않음. 매번 실행 시 baseline 최신화.
- */
-export async function autoSummarizeWeekly(
-  storage: StorageAdapter,
-  today: Date,
-): Promise<boolean> {
-  const { monday, sunday } = getWeekBoundary(today);
-  return summarizeRangeInto(storage, "weekly", monday, sunday, monday);
-}
-
-/**
- * 이번 달(1일~말일)의 daily_reports를 모아서 monthly row로 upsert.
- * 발송된 monthly는 건드리지 않음. 매번 실행 시 baseline 최신화.
- */
-export async function autoSummarizeMonthly(
-  storage: StorageAdapter,
-  today: Date,
-): Promise<boolean> {
-  const year = today.getFullYear();
-  const month = today.getMonth(); // 0-based
-  const firstStr = toDateStr(new Date(year, month, 1));
-  const lastDay = new Date(year, month + 1, 0); // 다음 달 0일 = 이번 달 마지막 날
-  const lastStr = toDateStr(lastDay);
-  return summarizeRangeInto(storage, "monthly", firstStr, lastStr, firstStr);
-}
+// v0.8.6에서 daily 요약의 휴리스틱 fallback을 제거한 방향성과 일치시켜,
+// v0.8.8에서 weekly/monthly baseline의 텍스트-머지 경로(summarizeRangeInto,
+// autoSummarizeWeekly, autoSummarizeMonthly)를 전부 삭제했다.
+// weekly/monthly는 이제 오직 skill의 `circle --save --type <type>` 경로로만
+// 생성된다. Workers AI 기반 CLI rollup은 추후 별도 PR로 도입 예정.
 
 /**
  * 변경된 날짜의 세션을 자동 요약.
@@ -620,6 +441,7 @@ export async function autoSummarizeMonthly(
 export async function autoSummarize(
   storage: StorageAdapter,
   changedDates: string[],
+  forceDates?: Set<string>,
 ): Promise<number> {
   const { resolveAiProvider, loadAiProviderConfig, assertAiReadyForCliPipeline } =
     await import("./ai-provider.js");
@@ -660,13 +482,20 @@ export async function autoSummarize(
   let summarized = 0;
 
   for (const date of changedDates) {
-    // 이미 요약된 날짜 처리: 발송 완료면 보호, stale이면 재요약
+    // 이미 요약된 날짜 처리:
+    //   - 발송 완료면 보호 (절대 덮어쓰지 않음)
+    //   - forceDates에 포함되면 freshness 무관 재요약 (이번 주/달 항상 최신화)
+    //   - 아니면 stale일 때만 재요약
     const existingReport = await storage.getDailyReport(date, "daily");
     if (existingReport?.summaryJson) {
       if (existingReport.emailedAt != null) continue;
-      const freshness = await storage.getDailyReportFreshness(date, "daily");
-      if (freshness && !freshness.stale) continue;
-      console.log(`  ♻️  ${date} re-summarizing (gather updated after last summary)`);
+      if (forceDates?.has(date)) {
+        console.log(`  ♻️  ${date} re-summarizing (current week/month — forced refresh)`);
+      } else {
+        const freshness = await storage.getDailyReportFreshness(date, "daily");
+        if (freshness && !freshness.stale) continue;
+        console.log(`  ♻️  ${date} re-summarizing (gather updated after last summary)`);
+      }
     }
 
     const report = await storage.getGatherReportByDate(date);
@@ -750,34 +579,25 @@ export async function autoSummarize(
       }
     }
 
-    // 동일 제목 세션 통합 (개별 요약 → 재요약)
-    const mergedSummaries = mergeSummariesByTitle(summaries);
-    const mergeCount = summaries.length - mergedSummaries.length;
-    if (mergeCount > 0) {
-      console.log(`  🔗 ${date}: ${summaries.length} sessions → ${mergedSummaries.length} (${mergeCount} merged)`);
-    }
-
-    if (mergedSummaries.length > 0) {
+    // v0.8.8: 프로젝트 단위 휴리스틱 머지 제거. 같은 프로젝트에 여러 세션이
+    // 있어도 각 세션의 AI 요약을 독립 항목으로 저장한다.
+    if (summaries.length > 0) {
+      // overview는 Workers AI로만 생성. 실패하거나 provider가 없으면 null —
+      // 휴리스틱 "날짜 작업: topic1, topic2, ..." 폴백은 제거됨.
       let overview: string | null = null;
       if (cfConfig && cfOverview) {
-        // Workers AI overview 실패 시 null 반환 — null이면 세션 topic 조립으로 폴백
-        overview = await cfOverview(cfConfig, date, mergedSummaries as any);
-      }
-      // overview 없으면 세션 topic만 조합 (AI 요약 결과를 조합한 것이므로 휴리스틱 아님)
-      if (!overview) {
-        const topics = mergedSummaries.map((s) => s.topic).filter(Boolean);
-        overview = topics.length > 0 ? `${date} 작업: ${topics.join(", ")}` : null;
+        overview = await cfOverview(cfConfig, date, summaries as any);
       }
 
       await circleSave(storage, {
         date,
         type: "daily",
         overview: overview ?? undefined,
-        sessions: mergedSummaries,
+        sessions: summaries,
       });
       summarized++;
       const providerLabel = cfConfig ? "Cloudflare AI" : provider;
-      console.log(`  🤖 ${date} summary done (${mergedSummaries.length} sessions, ${providerLabel})`);
+      console.log(`  🤖 ${date} summary done (${summaries.length} sessions, ${providerLabel})`);
     }
   }
 
@@ -788,11 +608,8 @@ export async function autoSummarize(
  * circle 메인 오케스트레이터 — air 실행 + finalize + 변경 날짜 목록 반환.
  * SKILL.md 흐름(--json/--save)이 아닌 경우, Cloudflare AI로 자동 요약.
  *
- * @param options.mode
- *   - "full" (기본): daily autoSummarize 이후 weekly/monthly도 매번 재생성
- *     (이번 주/이번 달 baseline 최신화, 발송된 보고서는 건드리지 않음)
- *   - "smart": 기존 동작 — daily만 요약, weekly/monthly는 out 레벨의
- *     요일 트리거 및 catchup에 맡김 (토큰 절약 모드)
+ * v0.8.8: `mode` 파라미터 제거. 휴리스틱 weekly/monthly baseline 재생성
+ * 경로가 삭제되어 circle은 항상 daily만 처리한다.
  */
 export async function runCircle(
   storage: StorageAdapter,
@@ -800,7 +617,6 @@ export async function runCircle(
     json?: boolean;
     save?: boolean;
     skipAutoSummarize?: boolean;
-    mode?: PipelineMode;
     /** #10 rerun: 강제 재요약할 날짜(YYYY-MM-DD) 목록. 발송본은 보호됨. */
     rerun?: string[];
     /** #2 claude-code provider일 때 needs_skill JSON으로 종료시킬 CLI 명령명 */
@@ -822,9 +638,28 @@ export async function runCircle(
   }
 
   const airResult = await runAir(storage, options);
-  // rerun으로 무효화된 날짜를 changedDates에 병합 (air이 변경 감지 못할 수 있음)
-  const allChanged = Array.from(new Set([...airResult.changedDates, ...rerunDates]));
-  const finalized = await finalizePreviousReports(storage, new Date());
+
+  // v0.8.8: 매 실행 시 이번 주(월~오늘) + 이번 달(1일~오늘) daily 강제 재요약.
+  // gather 데이터가 있는 날짜만 대상. 발송 완료된 daily는 autoSummarize 내부에서 보호.
+  const today = new Date();
+  const forcedWeekMonth = new Set<string>();
+  for (const d of [
+    ...datesInCurrentWeekUpToToday(today),
+    ...datesInCurrentMonthUpToToday(today),
+  ]) {
+    const g = await storage.getGatherReportByDate(d);
+    if (g?.reportJson) forcedWeekMonth.add(d);
+  }
+
+  // rerun 무효화 날짜 + 이번 주/달 daily를 changedDates에 병합
+  const allChanged = Array.from(
+    new Set<string>([
+      ...airResult.changedDates,
+      ...rerunDates,
+      ...forcedWeekMonth,
+    ]),
+  );
+  const finalized = await finalizePreviousReports(storage, today);
   const summaryErrors: CircleSummaryError[] = [];
 
   // Auto-summarize (when not using SKILL.md --json/--save flow)
@@ -833,34 +668,15 @@ export async function runCircle(
     const { assertAiReadyForCliPipeline } = await import("./ai-provider.js");
     await assertAiReadyForCliPipeline(storage, options?.needsSkillCommand);
 
-    const summarized = await autoSummarize(storage, allChanged);
+    const summarized = await autoSummarize(storage, allChanged, forcedWeekMonth);
     if (summarized > 0) {
       console.log(`  🤖 ${summarized} day(s) summarized`);
     }
 
-    // Full mode: weekly/monthly baseline 재생성 — 매번 덮어쓰되 발송본은 보호.
-    // 각 타입의 실패는 summaryErrors에 기록되고, runOut이 해당 타입 발송을
-    // 스킵하여 stale baseline 위 발송을 방지한다.
-    const mode = options?.mode ?? "full";
-    if (mode === "full") {
-      const today = new Date();
-      try {
-        const wrote = await autoSummarizeWeekly(storage, today);
-        if (wrote) console.log(`  📅 weekly baseline refreshed`);
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        console.warn(`  ⚠️  weekly auto-summary failed: ${msg}`);
-        summaryErrors.push({ type: "weekly", error: msg });
-      }
-      try {
-        const wrote = await autoSummarizeMonthly(storage, today);
-        if (wrote) console.log(`  📆 monthly baseline refreshed`);
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        console.warn(`  ⚠️  monthly auto-summary failed: ${msg}`);
-        summaryErrors.push({ type: "monthly", error: msg });
-      }
-    }
+    // v0.8.8: weekly/monthly baseline 자동 재생성 제거됨.
+    // 휴리스틱 텍스트-머지로 고품질 요약이 되덮이는 문제를 막기 위해,
+    // weekly/monthly는 이제 skill 경로의 `circle --save --type <type>`으로만
+    // 생성된다. out*이 row를 못 찾으면 skill 안내 에러로 중단한다.
   }
 
   return {

@@ -1,5 +1,5 @@
 import initSqlJs, { type Database } from "sql.js";
-import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { readFile, writeFile, mkdir, rename } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
@@ -299,7 +299,12 @@ export class SqlJsAdapter implements StorageAdapter {
     if (!this.db) return;
     const data = this.db.export();
     const encrypted = encrypt(Buffer.from(data), this.encryptionKey);
-    await writeFile(this.dbPath, encrypted, { mode: 0o600 });
+    // Atomic write: tmp → rename. writeFile() truncates-then-writes, so a
+    // mid-write crash leaves a 0-byte DB (we lost a whole working DB to this
+    // once). rename() on same filesystem is atomic — no partial-write state.
+    const tmpPath = `${this.dbPath}.tmp.${process.pid}`;
+    await writeFile(tmpPath, encrypted, { mode: 0o600 });
+    await rename(tmpPath, this.dbPath);
   }
 
   // ── 세션 ──

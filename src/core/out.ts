@@ -15,24 +15,6 @@ import type { D1Client } from "../cloud/d1-client.js";
 import { padEndW } from "../util/display-width.js";
 
 // ---------------------------------------------------------------------------
-// Pipeline mode — centralized source of truth
-// ---------------------------------------------------------------------------
-
-/** 지원되는 pipeline mode 전체 목록. 새 mode 추가 시 여기만 수정. */
-export const PIPELINE_MODES = ["smart", "full"] as const;
-
-/** Pipeline mode 리터럴 타입 — `"smart" | "full"`와 동치. */
-export type PipelineMode = (typeof PIPELINE_MODES)[number];
-
-/** config DB에서 사용하는 key 이름. */
-export const PIPELINE_MODE_CONFIG_KEY = "pipeline_mode";
-
-/** 런타임 타입 가드 — storage/CLI 입력처럼 문자열로 들어오는 값 검증용. */
-export function isPipelineMode(v: unknown): v is PipelineMode {
-  return typeof v === "string" && (PIPELINE_MODES as readonly string[]).includes(v);
-}
-
-// ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
@@ -47,13 +29,6 @@ export interface OutOptions {
   scope?: import("../config/scope.js").ScopeConfig;
   /** 대상 날짜 (yyyyMMdd, e.g. "20260409") — 미지정 시 오늘 */
   date?: string;
-  /**
-   * 파이프라인 모드.
-   * - "full" (기본): 매번 weekly/monthly baseline도 재생성 (발송본은 보호)
-   * - "smart": daily만 요약, weekly/monthly는 요일 트리거에만 의존 (토큰 절약)
-   * 미지정 시 `pipeline_mode` config 값 → 없으면 "full"
-   */
-  mode?: PipelineMode;
   /** #4 --verify: 발송하지 않고 체크리스트만 출력 */
   verify?: boolean;
   /** #2 claude-code provider 감지 시 needs_skill JSON으로 종료시킬 CLI 명령명 */
@@ -110,20 +85,6 @@ export function parseDateArg(raw: string): Date {
     throw new Error(`Invalid date: "${raw}" does not represent a valid calendar date`);
   }
   return date;
-}
-
-/**
- * Pipeline mode 해석.
- * 우선순위: explicit option > config value > default "full"
- * 유효하지 않은 값은 무시하고 기본값 사용.
- */
-export function resolvePipelineMode(
-  explicit: PipelineMode | undefined,
-  configured: string | null | undefined,
-): PipelineMode {
-  if (isPipelineMode(explicit)) return explicit;
-  if (isPipelineMode(configured)) return configured;
-  return "full";
 }
 
 /**
@@ -293,9 +254,8 @@ export async function runOut(
 ): Promise<OutResult> {
   const result: OutResult = { sent: 0, skipped: 0, errors: 0, entries: [] };
 
-  // 1. pipeline mode 해석 — CLI 옵션 > config > 기본값 "full"
-  const configured = await storage.getConfig(PIPELINE_MODE_CONFIG_KEY);
-  const mode = resolvePipelineMode(options?.mode, configured);
+  // v0.8.8: pipeline mode 제거됨. circle은 항상 daily만 요약한다.
+  // weekly/monthly는 skill 경로의 `circle --save --type <type>`로만 생성된다.
 
   // #4 verify 모드: circle 없이 체크리스트만
   if (options?.verify) {
@@ -331,12 +291,9 @@ export async function runOut(
     return result;
   }
 
-  // 2. circle 실행으로 데이터 최신화
-  // full 모드: daily + weekly/monthly baseline 재생성 (발송본은 보호)
-  // smart 모드: daily만 (기존 동작)
+  // 2. circle 실행으로 daily 데이터 최신화
   const circleResult = await runCircle(storage, {
     scope: options?.scope,
-    mode,
     needsSkillCommand: options?.needsSkillCommand,
   });
   const failedAutoSummaryTypes = new Set(
@@ -486,6 +443,31 @@ export async function runOut(
     }
 
     if (!rendered) {
+      // weekly/monthly가 비어 있으면 스킵이 아니라 에러로 처리 — v0.8.8에서
+      // 휴리스틱 baseline을 없앴으므로 row 생성은 skill의 `circle --save` 경로로만
+      // 이루어진다. 사용자에게 다음 행동을 명확히 안내.
+      if (reportType !== "daily") {
+        const dailyReport = await storage.getDailyReport(dateKey, reportType);
+        const hasSessions =
+          dailyReport?.summaryJson
+            ? (() => {
+                try {
+                  const arr = JSON.parse(dailyReport.summaryJson!);
+                  return Array.isArray(arr) && arr.length > 0;
+                } catch {
+                  return false;
+                }
+              })()
+            : false;
+        const msg = !dailyReport
+          ? `${reportType} report row for ${dateKey} not found. Run \`/sincenety\` in Claude Code to generate a high-quality summary first.`
+          : !hasSessions
+            ? `${reportType} report for ${dateKey} has no sessions. Run \`/sincenety\` to rebuild the summary.`
+            : `${reportType} render produced no output for ${dateKey} — summary data may be malformed.`;
+        result.errors++;
+        result.entries.push({ type: reportType, dateKey, status: "error", error: msg });
+        continue;
+      }
       result.skipped++;
       result.entries.push({ type: reportType, dateKey, status: "skipped" });
       continue;

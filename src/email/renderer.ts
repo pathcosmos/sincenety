@@ -51,7 +51,13 @@ export async function renderDailyEmail(
   const dailyReport = await storage.getDailyReport(date, reportType);
 
   // 3. raw 갈무리 데이터 조회
-  const gatherReport = await storage.getGatherReportByDate(date);
+  // weekly/monthly는 기간 rollup이므로 per-day gather를 쓰면 안 된다
+  // (date가 월요일/1일이어서 그 하루치 gather만 잡혀 세션이 과소 표시됨).
+  // weekly/monthly는 dailyReport.summaryJson만 신뢰 — aggregator 결과가 진실.
+  const gatherReport =
+    reportType === "daily"
+      ? await storage.getGatherReportByDate(date)
+      : null;
 
   // 4. 둘 다 없으면 null
   if (!dailyReport && !gatherReport) return null;

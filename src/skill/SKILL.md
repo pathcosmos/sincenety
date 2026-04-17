@@ -18,7 +18,7 @@ description: Use when the user wants to log, review, or summarize their Claude C
    - 이미 최신 요약이 DB에 있는 날짜는 스킵 가능 (`circle --json` 결과의 sessions가 비어 있으면 스킵)
 2. **그 후에만** 사용자가 요청한 `sincenety out*` 명령을 실행해 발송
 
-**왜 이 규칙이 필요한가**: `sincenety out*`는 CLI 내부에서 `circle`을 자동 호출하지만, `ai_provider=claude-code`인 환경에서는 CLI가 스스로 요약을 만들 수 없어 휴리스틱/빈 요약으로 발송될 수 있습니다. Claude Code 안에서 이 스킬을 통해 선행 요약을 해야만 품질 보장이 됩니다.
+**왜 이 규칙이 필요한가**: v0.8.8부터 weekly/monthly는 skill 경로로만 생성됩니다. `outw`/`outm`은 해당 기간 report row가 없으면 **명확한 에러로 중단**합니다 — CLI가 자체적으로 휴리스틱 baseline을 만들지 않습니다. 따라서 skill에서 `/sincenety` 플로우로 먼저 고품질 재요약을 수행해야만 발송이 가능합니다.
 
 **예외**: 사용자가 명시적으로 "요약 건너뛰고 그냥 보내", "baseline 그대로 발송", "renderOnly만" 등 선행을 생략하라고 지시한 경우에만 out*를 바로 실행합니다.
 
@@ -210,66 +210,64 @@ sincenety outd --render-only
 ### 4단계: 결과 확인
 발송 결과(`sent`/`skipped`/`errors`)를 사용자에게 요약 보고. 에러가 있으면 원인과 재시도 방법 안내.
 
-## 파이프라인 모드 (v0.8.4+)
+## ⚠️ v0.8.8 변경사항: 휴리스틱 baseline 제거
 
-`out`/`outd`/`outw`/`outm`는 실행 시 내부적으로 `circle`을 돌려 파이프라인을 최신화합니다. 두 가지 모드가 있습니다:
+v0.8.8에서 다음 휴리스틱 경로가 **전부 삭제**됐습니다:
 
-- **full (기본)** — 매 실행마다 이번 주 weekly, 이번 달 monthly의 baseline을 자동으로 재생성합니다. 이 baseline은 해당 기간의 daily 요약들을 프로젝트 단위로 머지한 휴리스틱 요약입니다. 토큰을 조금 더 쓰되 누락 없이 항상 최신 상태를 유지합니다.
-- **smart** — 기존 동작. daily만 요약하고 weekly/monthly는 요일 트리거(금요일/말일)나 catchup 감지 시에만 생성.
+- `summarizeRangeInto` / `autoSummarizeWeekly` / `autoSummarizeMonthly` (outcomes.join/flows.join 류의 텍스트 조합)
+- `mergeSummariesByTitle` (같은 프로젝트 여러 세션을 텍스트 조합으로 머지)
+- `pipeline_mode` config / `--mode` CLI 옵션 (full/smart 구분)
+- daily overview의 "날짜 작업: topic1, topic2, ..." 휴리스틱 폴백
 
-**안전 규칙**: `emailedAt != null`인 weekly/monthly row는 **절대 덮어쓰지 않습니다**. 이미 발송된 보고서의 무결성을 보장합니다.
+이제 weekly/monthly는 **반드시 skill의 `circle --save --type` 경로로만** 생성됩니다. CLI가 자체적으로 baseline을 만들지 않습니다.
 
-설정 / 전환:
-```bash
-sincenety config --pipeline-mode full    # 또는 smart
-sincenety out --mode full                # 1회만
-```
+**out* 동작 변화**: `outw`/`outm`이 해당 기간의 report row를 찾지 못하거나 비어 있으면 **에러로 종료**하면서 skill로 재요약하라고 안내합니다.
 
-## 워크플로우: 주간/월간 보고 고품질 재요약
+**circle 동작 변화**: 매 실행마다 **이번 주(월~오늘) + 이번 달(1일~오늘)** 범위의 daily는 freshness 무관하게 강제 재요약됩니다 (이미 발송된 daily는 보호). `circle --json` 출력에도 이 범위가 항상 포함되어 skill이 주간/월간 재요약의 기반 자료로 활용할 수 있습니다.
 
-full 모드에서는 weekly/monthly baseline이 자동 생성되므로, `outw`/`outm`을 바로 실행해도 빈 결과가 나오지 않습니다. 하지만 baseline은 휴리스틱 머지라 품질이 제한적이므로, Claude Code가 발송 전에 고품질로 재요약해서 덮어쓰는 것을 권장합니다.
+## 워크플로우: 주간/월간 고품질 재요약
 
-### 1. baseline 생성 확인 (자동)
+`/sincenety` 기본 플로우(5단계)를 수행한 뒤, outw/outm 요청이면 아래를 추가로 수행합니다.
 
-`sincenety out`을 실행하면 다음 로그가 보입니다:
-```
-📅 weekly baseline refreshed
-📆 monthly baseline refreshed
-```
-이 시점에 이번 주/달 row가 DB에 준비된 상태입니다.
-
-### 2. 기간 내 데이터 조회 및 분석
+### 1. 기간 내 daily 데이터 조회
 
 ```bash
 sincenety circle --json
 ```
-출력된 JSON에서 대상 기간의 daily 세션들을 분석합니다. daily 요약(topic/outcome/flow/significance/nextSteps)이 이미 있으므로, 이를 입력으로 받아 주간/월간 단위의 상위 요약을 작성합니다.
+출력 JSON에서 이번 주(월~오늘) 또는 이번 달(1일~오늘) 범위의 daily 세션을 확인합니다. v0.8.8부터 해당 범위는 매번 포함됩니다.
 
-### 3. 재요약 저장 (baseline 덮어쓰기)
+각 daily의 summaryJson에서 `topic/outcome/flow/significance/nextSteps`를 모아 주간/월간 단위의 상위 요약을 작성합니다.
+
+### 2. 재요약 저장
 
 ```bash
 echo '{ "date": "YYYY-MM-DD", "overview": "주간 종합", "sessions": [...] }' \
   | sincenety circle --save --type weekly
 ```
 
-- `date`는 **주의 월요일** (weekly) 또는 **달의 1일** (monthly)
-- `sessions`는 프로젝트 단위로 통합된 상위 요약 항목들
-- `overview`는 해당 기간 전체를 관통하는 2-3문장 서술
+- `date`: **주의 월요일** (weekly) 또는 **달의 1일** (monthly)
+- `sessions`: 프로젝트 단위로 통합된 상위 요약 항목들 (각 항목에 projectName/topic/outcome/flow/significance/nextSteps)
+- `overview`: 해당 기간 전체를 관통하는 2-3문장 서술
 
 `circle --save`는 `emailedAt`이 null이면 덮어쓰고, 이미 발송됐으면 그대로 둡니다.
 
-### 4. 발송
+### 3. 발송
 
 ```bash
 sincenety outw    # 이번 주 weekly 즉시 발송
 sincenety outm    # 이번 달 monthly 즉시 발송
 ```
 
-혹은 Gmail MCP 경로:
+또는 Gmail MCP 경로:
 ```bash
 sincenety outw --render-only
 ```
 → JSON을 받아 `gmail_create_draft`에 전달.
+
+### 실패 케이스
+
+- `❌ weekly report row for YYYY-MM-DD not found` — 재요약을 skill로 먼저 수행해야 합니다. 위 1~2단계를 다시 진행하세요.
+- `❌ weekly report for YYYY-MM-DD has no sessions` — `circle --save`에 전달한 sessions 배열이 비어 있었습니다. 페이로드를 다시 점검하세요.
 
 ## How It Works
 

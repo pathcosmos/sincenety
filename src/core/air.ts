@@ -103,7 +103,7 @@ export function computeDataHash(sessions: SessionGroup[]): string {
 }
 
 /**
- * 백필 범위 결정 — 체크포인트가 없으면 90일 전부터.
+ * 백필 범위 결정 — 체크포인트가 없으면 7일 전부터.
  */
 export async function determineRange(
   storage: StorageAdapter,
@@ -112,9 +112,9 @@ export async function determineRange(
   const lastCheckpoint = await storage.getLastCheckpoint();
 
   if (lastCheckpoint == null) {
-    // 첫 실행: 90일 전부터
+    // 첫 실행: 7일 전부터 (긴 백필로 인한 과도한 토큰 사용 방지)
     const d = new Date();
-    d.setDate(d.getDate() - 90);
+    d.setDate(d.getDate() - 7);
     d.setHours(0, 0, 0, 0);
     return { from: d.getTime(), to: now, isFirstRun: true };
   }

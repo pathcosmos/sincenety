@@ -198,17 +198,15 @@ Cloudflare D1을 통한 멀티머신 데이터 통합:
 - **머신 ID**: 하드웨어 기반 자동 감지 (아래 참조), `config --machine-name`으로 커스텀 식별
 - **의존성 무추가**: D1 REST API는 native `fetch` 사용 -- 새 패키지 없음
 
-### 파이프라인 모드 스위치 & 주간/월간 베이스라인 자동 생성
+### 주간/월간 보고 (v0.8.8+)
 
-**v0.8.4** — `out`/`outd`/`outw`/`outm` 실행 시 DB에 **항상** 최신 weekly/monthly 베이스라인이 존재하도록 보장하여, `outw`/`outm`이 빈 결과를 내던 구조적 공백을 해소합니다:
+**v0.8.8에서 휴리스틱 주간/월간 baseline 자동 생성을 완전히 제거했습니다.** 이전(v0.8.4)의 자동 생성 경로는 daily `outcomes`/`flows`를 `"\n"`·`" → "`로 이어붙이던 텍스트-머지로, 품질이 낮은 주간/월간 요약이 조용히 발송되는 문제가 있었습니다. 통째로 삭제됨.
 
-- **베이스라인 자동 생성**: 매 실행마다 이번 주(월~일)와 이번 달(1일~말일)의 `daily_reports`를 모아 프로젝트 단위 통합 후 weekly/monthly row를 upsert
-- **발송본 보호**: `emailedAt != null`인 row는 절대 덮어쓰지 않아 이미 발송된 보고서의 무결성 보장
-- **`--mode=full|smart` 스위치**: `full`(기본)은 매 실행마다 베이스라인 재생성, `smart`는 v0.8.3 동작 유지(금요일에만 weekly, 말일에만 monthly — 토큰 절약)
-- **config 기본값**: `sincenety config --pipeline-mode <full|smart>`로 영구 기본값 설정 가능
-- **묵음 실패 차단**: auto-summary 실패를 `CircleResult.summaryErrors`로 구조화하고, `runOut`이 이를 `result.errors`로 승격, CLI가 `process.exitCode = 1`로 전파 — cron 환경에서 weekly/monthly 재생성 실패를 exit code로 감지 가능
-- **`emailedAt === 0` falsy 가드 수정**: 명시적 `!= null` 비교로 발송된 보고서의 엣지 케이스 덮어쓰기 방지
-- **JSON.parse 경고 출력**: 손상된 `summaryJson`이 있는 daily row는 실패한 `reportDate`를 명시하는 warn을 출력. 이전처럼 조용히 데이터가 사라지지 않음
+- **Skill 경로로만 생성**: weekly/monthly row는 **오직** `/sincenety` 스킬이 `circle --save --type weekly|monthly`를 통해 만듭니다. Claude Code가 해당 기간의 daily 요약 전체를 맥락으로 삼아 고품질 요약을 작성한 뒤 저장 — CLI가 자체적으로 주간/월간 내용을 만들어내지 않습니다.
+- **`outw` / `outm` 에러 계약**: 대상 row가 없거나 `sessions` 배열이 비어 있으면 `runOut`이 `skipped`가 아닌 **명확한 에러**를 냅니다 (`"weekly report row for <date> not found. Run /sincenety to generate..."`). cron은 exit code 1로 감지.
+- **매 실행 시 이번 주/달 daily 재요약**: `runCircle`은 이번 주(월~오늘) + 이번 달(1일~오늘)의 daily를 `gather_reports.data_hash` 변경 여부와 무관하게 강제로 재요약합니다. 이후 skill이 주간/월간을 재생성할 때 항상 최신 daily 기반으로 작업할 수 있도록 보장.
+- **발송본 보호 유지**: `emailedAt != null`인 daily/weekly/monthly row는 위 강제 refresh 규칙에서도 덮어쓰이지 않습니다.
+- **제거된 설정/플래그**: `pipeline_mode` config 키와 `--mode` / `--pipeline-mode` CLI 플래그 삭제. `--pipeline-mode`는 한 줄 deprecation 경고만 출력하고 아무 동작도 하지 않음.
 
 ### 크로스 디바이스 통합 리포트
 
@@ -724,7 +722,7 @@ $ sincenety [--token T --key K --email E]
 
 1. **멱등성(Idempotency) 경계** — `sincenety`는 하루에 여러 번 실행되는 패턴(크론 10:00, 수동 15:00, 자동 일 마감)을 전제로 설계됨. `sessions`의 복합 PK `(session_id, project)`와 `daily_reports`의 `UNIQUE(report_date, report_type)` 제약이 모든 재실행을 안전하게 만듦. DB가 없다면 (a) 매 실행마다 중복 리포트/중복 이메일이 생기거나 (b) 별도 dedupe 인덱스를 디스크에 직접 유지해야 함 — 후자는 결국 "제대로 안 만든 DB"에 불과.
 
-2. **발송 상태의 유일한 권위(authority)** — `daily_reports.emailed_at`이 "이 리포트가 이미 발송됐는가?"에 대한 단일 진실 공급원. `circle.ts`의 `autoSummarizeWeekly` / `autoSummarizeMonthly`에서 `if (existing && existing.emailedAt != null) return false`로 이미 이메일 나간 주간/월간 행이 덮어써지는 사고를 차단. `email_logs`는 append-only 감사 로그로서, 성공·실패 발송 전부가 subject/recipient/provider/error와 함께 기록됨.
+2. **발송 상태의 유일한 권위(authority)** — `daily_reports.emailed_at`이 "이 리포트가 이미 발송됐는가?"에 대한 단일 진실 공급원. `circle.ts`의 `autoSummarize`와 `circleSave` 전반에서 `emailedAt != null`인 row는 덮어쓰기로부터 명시적으로 보호됨 — v0.8.8의 "이번 주/달 매번 강제 재요약" 규칙 하에서도 동일. `email_logs`는 append-only 감사 로그로서, 성공·실패 발송 전부가 subject/recipient/provider/error와 함께 기록됨.
 
 3. **크로스 디바이스 머지의 피봇(pivot)** — `sync push`(발송 전)가 이 기기의 `daily_reports` 행들을 Cloudflare D1로 업로드하고, `sync pull`이 다른 기기들이 작성한 행을 내려받음. 이메일 렌더러의 머지 로직은 로컬 행과 pull한 행을 `(report_date, project_name)` 기준으로 조인하고 세션은 `(project_name, title_normalized)`로 dedupe. 로컬 DB가 없으면 "이 기기의 시점(view)"이란 개념 자체가 성립하지 않아 push 불가, 원격 행을 merge할 안정적 피봇도 없음.
 
@@ -869,7 +867,7 @@ $ sincenety [--token T --key K --email E]
 | `value` | TEXT NOT NULL | 문자열 값 (필요 시 JSON 인코딩) |
 | `updated_at` | INTEGER NOT NULL | |
 
-알려진 키: `schema_version`, `email_to`, `smtp_user`, `smtp_pass`, `smtp_host`, `smtp_port`, `resend_key`, `d1_api_token`, `d1_account_id`, `d1_database_id`, `cf_ai_token`, `provider`, `pipeline_mode` (`smart` | `full`), `scope` (`global` | `project`).
+알려진 키: `schema_version`, `email_to`, `smtp_user`, `smtp_pass`, `smtp_host`, `smtp_port`, `resend_key`, `d1_api_token`, `d1_account_id`, `d1_database_id`, `cf_ai_token`, `provider`, `ai_provider` (`cloudflare` | `anthropic` | `claude-code` | `auto`), `scope` (`global` | `project`). *(`pipeline_mode` 키는 v0.8.8에서 폐기되어 더 이상 읽히지 않으며, `--pipeline-mode` 플래그는 deprecation 경고만 출력합니다.)*
 
 ##### `vacations`
 
@@ -997,6 +995,93 @@ npx .                # 현재 디렉토리를 npx로 실행
 ---
 
 ## 개발 이력
+
+### v0.8.8 (2026-04-17) — 휴리스틱 주간/월간 baseline 제거 + DB atomic write + 렌더러 버그 수정
+
+#### 하이라이트
+
+- **휴리스틱 주간/월간 baseline 완전 제거.** 텍스트-조합 기반 경로 (`summarizeRangeInto`, `autoSummarizeWeekly`, `autoSummarizeMonthly`, `mergeSummariesByTitle`, 그리고 daily overview의 `topics.join(", ")` 폴백) 전부 삭제. 이제 주간/월간 보고서는 **오직** skill 경로 `circle --save --type <weekly|monthly>`로만 생성됩니다. CLI가 outcomes·flows를 이어붙여 임의로 요약을 만들어내는 일은 없음.
+- **렌더러 버그 수정: 주간/월간이 월요일/1일의 하루치만 렌더되던 문제.** 이전 `renderDailyEmail`은 weekly/monthly에서도 `getGatherReportByDate(date)`를 호출했는데, `date`가 월요일/1일이라 그 하루치 gather만 가져와 세션으로 씀 — 주간/월간 row에 실제로 쌓여 있던 통합 세션들은 렌더에서 배제됐음. 이제 `gatherReport` 조회는 `reportType === "daily"`일 때만 수행.
+- **Atomic DB write.** `SqlJsAdapter.save()`가 `writeFile(dbPath, encrypted)`을 사용해 truncate-then-write로 쓰고 있었고, 쓰는 도중 프로세스가 죽으면 DB 파일이 0바이트로 남아 이후 모든 sincenety 명령에서 복호화 실패(실제 2026-04-17 작업 중 발생해 DB와 config를 전부 날림). 이제 `dbPath.tmp.<pid>`로 쓰고 `rename`으로 교체 — 같은 파일시스템이면 atomic.
+- **최초 실행 백필 90일 → 7일.** `determineRange`가 체크포인트 없을 때 기본 90일을 돌리던 것을 7일로 축소. 신규 설치/복구 직후 3개월치 Workers AI 호출이 발생하는 낭비 제거.
+- **`out*`: 비어 있는 weekly/monthly에 명확한 에러.** `outw`/`outm`이 `renderDailyEmail`가 null을 돌려주면 조용히 "skip"하던 것을 **에러**로 승격. 메시지: `weekly report row for <date> not found. Run /sincenety in Claude Code to generate a high-quality summary first.` skill 계약을 명시적으로 만듦.
+- **매 실행 시 이번 주/달 daily 강제 재요약.** 사용자 요구에 따라 `runCircle`은 이번 주(월~오늘) + 이번 달(1일~오늘)을 강제 요약 대상에 포함 (freshness skip 우회, `emailedAt != null` daily는 여전히 보호). `circle --json`도 이 범위를 항상 포함하므로 skill이 언제든 최신 daily를 기반으로 주간/월간 요약을 다시 만들 수 있음.
+
+#### 제거된 심볼 / 설정
+
+- `src/core/circle.ts`: `summarizeRangeInto`, `autoSummarizeWeekly`, `autoSummarizeMonthly`, `mergeSummariesByTitle`, `normalizeTitle`(머지 제거 후 미사용), `MergedSummary`(→ `SessionSummary`로 개명).
+- `src/core/out.ts`: `PIPELINE_MODES`, `PipelineMode`, `PIPELINE_MODE_CONFIG_KEY`, `isPipelineMode`, `resolvePipelineMode`. `OutOptions.mode` 필드 삭제.
+- `src/cli.ts`: `parseModeFlag`, `out`/`outd`/`outw`/`outm`의 `--mode` 플래그, `config`의 `--pipeline-mode`(이제 deprecation 경고만 출력하고 아무 동작도 하지 않음).
+- `pipeline_mode` config 키는 더 이상 어디서도 읽히지 않음. 신규 설치는 이 키를 갖지 않음.
+
+#### out* 에러 계약 (v0.8.8+)
+
+주간/월간 row가 없거나 `summaryJson`이 비어 있을 때 `runOut`은 `skipped`가 아닌 **`error` 엔트리**를 기록하고 `result.errors`를 올립니다. 에러 메시지는 사용자에게 "`/sincenety`로 재요약 먼저 수행하라"고 안내. cron은 기존대로 `result.errors > 0` 시 exit code 1로 감지. daily는 기존 `skipped` 경로 유지 (활동 없는 날은 에러가 아님).
+
+#### circle 동작 변경
+
+- `runCircle`: `forcedWeekMonth = (이번 주 ∪ 이번 달) ∩ (gather 존재)`를 계산하여 `allChanged`에 합침 + `autoSummarize`의 신규 `forceDates` 파라미터로 전달. 이 집합의 freshness 체크를 우회해서 매번 재요약하되, `emailedAt != null` daily는 계속 보호.
+- `circleJson`: 같은 범위 확장 적용 — skill 클라이언트에서는 gather 변경이 없어도 이번 주/달이 항상 "처리 대상 날짜"로 보임.
+- Daily `overview`가 Cloudflare `generateOverview` 실패 시 `"<date> 작업: topic1, topic2, ..."`로 폴백하던 것 제거. AI가 실패하면 `overview`는 null 유지 — 렌더러가 null을 무리 없이 처리함. v0.8.6의 "휴리스틱 요약 절대 금지" 규칙과 일관.
+
+#### 렌더러 수정
+
+`src/email/renderer.ts`:
+
+```diff
+- const gatherReport = await storage.getGatherReportByDate(date);
++ // weekly/monthly는 기간 rollup이므로 per-day gather를 쓰면 안 된다
++ // (date가 월요일/1일이어서 그 하루치 gather만 잡혀 세션이 과소 표시됨).
++ const gatherReport =
++   reportType === "daily"
++     ? await storage.getGatherReportByDate(date)
++     : null;
+```
+
+이 버그가 금요일 주간보고 제목에서 `1 sessions, 4msg, 0Ktok`이 찍히던 직접 원인. 주간 row에 8개 프로젝트 통합 요약이 들어 있어도 월요일 하루치 gather(1세션 4메시지)만 렌더되고 있었음.
+
+#### Atomic DB 쓰기
+
+`src/storage/sqljs-adapter.ts`:
+
+```diff
+  private async save(): Promise<void> {
+    if (!this.db) return;
+    const data = this.db.export();
+    const encrypted = encrypt(Buffer.from(data), this.encryptionKey);
+-   await writeFile(this.dbPath, encrypted, { mode: 0o600 });
++   // Atomic write: tmp → rename. writeFile()은 truncate-then-write라
++   // 쓰기 중 크래시 시 DB가 0바이트로 날아감. rename은 같은 FS에서 atomic.
++   const tmpPath = `${this.dbPath}.tmp.${process.pid}`;
++   await writeFile(tmpPath, encrypted, { mode: 0o600 });
++   await rename(tmpPath, this.dbPath);
+  }
+```
+
+재발 트리거: 2026-04-17 주간 재발송 중 send-path의 `save()`가 도중 끊겨 `~/.sincenety/sincenety.db`가 0바이트로 남음. 이후 모든 명령이 "DB decryption failed" 출력. config (SMTP 앱 비밀번호, D1 API 토큰 포함)을 다시 입력해야 했고, 7일치 gather/daily 데이터를 재수집·재요약해야 했음. 이 atomic-write 수정으로 동일 사고 차단.
+
+#### 최초 실행 백필 축소
+
+`src/core/air.ts:determineRange` — 체크포인트 row가 없을 때 기본 백필 범위가 7일 (이전 90일). 과거 기본값은 cold start 시 분기 전체 분량의 Workers AI 호출을 유발하던 낭비였음.
+
+#### SKILL.md
+
+- "파이프라인 모드" 섹션 재작성: full/smart 구분 제거 및 휴리스틱 baseline 삭제 명시.
+- `outw`/`outm` 실패 모드 섹션 추가 — 에러 문자열 원문과 조치 방법 기재.
+- `circle --json`이 항상 이번 주/달을 포함한다는 점 명시 — skill이 주간/월간 재요약의 기반 자료로 활용할 수 있음.
+
+#### 변경 파일
+
+- `src/core/circle.ts` — 휴리스틱 baseline 함수들 삭제, daily overview 폴백 제거, forceDates 추가, circleJson 범위 확장
+- `src/core/out.ts` — PipelineMode 기계장치 삭제, weekly/monthly 빈 row 에러 처리
+- `src/core/air.ts` — 최초 실행 백필 90일 → 7일
+- `src/cli.ts` — `--mode` / `--pipeline-mode` 플래그 제거, parseModeFlag 제거, 버전 bump
+- `src/email/renderer.ts` — gather 조회를 `reportType === "daily"`로 게이팅
+- `src/storage/sqljs-adapter.ts` — tmp+rename 기반 atomic write 적용
+- `src/skill/SKILL.md` — 파이프라인/주간/월간 섹션 재작성
+- `package.json` — 0.8.7 → 0.8.8
+
+---
 
 ### v0.8.7 (2026-04-16) — 수정: 당일 새 세션 추가 시 autoSummarize가 재요약하지 않던 버그
 

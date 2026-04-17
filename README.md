@@ -199,17 +199,15 @@ Multi-machine data aggregation via Cloudflare D1:
 - **Machine ID**: hardware-based auto-detection (see below), `config --machine-name` override for custom identification
 - **Zero new dependencies**: uses native `fetch` for D1 REST API — no extra packages added
 
-### Pipeline Mode Switch & Auto Weekly/Monthly Baseline
+### Weekly / Monthly Reports (v0.8.8+)
 
-**v0.8.4** — `out`/`outd`/`outw`/`outm` now **always** have a fresh weekly/monthly baseline in the DB, closing the gap where `outw`/`outm` could silently produce empty results:
+**v0.8.8 removes the heuristic weekly/monthly baseline.** The previous auto-generation path (introduced in v0.8.4) concatenated daily `outcomes`/`flows` with `"\n"` and `" → "` respectively, producing low-quality summaries that were then silently re-emailed. It's gone entirely.
 
-- **Auto baseline generation**: On every run, the pipeline aggregates this week's (Mon–Sun) and this month's (1st–last day) `daily_reports`, runs project-level consolidation, and upserts the weekly/monthly row
-- **Emailed-report protection**: Rows with `emailedAt != null` are never overwritten, preserving already-delivered reports
-- **`--mode=full|smart` switch**: `full` (default) regenerates baselines every run; `smart` preserves v0.8.3 behavior (weekly only on Friday, monthly only on month-end — token-saving)
-- **Config-level default**: `sincenety config --pipeline-mode <full|smart>` stores a persistent default
-- **Silent failure hardening**: Auto-summary failures are structured into `CircleResult.summaryErrors`, promoted to `result.errors` by `runOut`, and propagated to CLI exit code (`process.exitCode = 1`) — cron environments can now detect weekly/monthly refresh failures via exit code
-- **`emailedAt === 0` falsy guard fixed**: Explicit `!= null` comparison prevents edge-case overwrite of already-sent reports
-- **JSON.parse warnings**: Corrupted `summaryJson` in a daily row now emits a warning with the failing `reportDate` instead of silently dropping data
+- **Skill-only generation**: weekly/monthly rows are created **exclusively** via `circle --save --type weekly|monthly` from the `/sincenety` skill. Claude Code inside the skill writes the summary using the full set of daily summaries as context, then saves it. CLI no longer invents weekly/monthly content.
+- **`outw` / `outm` error contract**: if the target row is missing or has an empty `sessions` array, `runOut` emits a precise error (`"weekly report row for <date> not found. Run /sincenety to generate..."`) instead of silently skipping. cron detects via exit code 1.
+- **Every-run current-period refresh**: `runCircle` now forces a re-summary of the current week (Mon–today) and current month (1st–today) **dailies**, even when the `gather_reports.data_hash` is unchanged. This guarantees that when the skill later rebuilds weekly/monthly, it has the latest daily content.
+- **Emailed-row protection preserved**: `emailedAt != null` still protects daily/weekly/monthly rows from overwrite, even under the forced-refresh rule above.
+- **Removed config/flags**: `pipeline_mode` config key and `--mode` / `--pipeline-mode` CLI flags are gone. The `--pipeline-mode` flag now emits a one-line deprecation warning and does nothing.
 
 ### Cross-Device Consolidated Reports
 
@@ -731,7 +729,7 @@ The local DB is a **derived artifact** — the source of truth is always `~/.cla
 
 1. **Idempotency boundary** — `sincenety` is designed to be run multiple times per day (cron at 10:00, manual at 15:00, auto at end-of-day). The composite PK `(session_id, project)` on `sessions` and the `UNIQUE(report_date, report_type)` on `daily_reports` make every run safely re-runnable. Without the DB, either (a) each run produces a duplicate report row/email or (b) a bespoke dedupe index must be maintained on disk — which is just "a DB, worse".
 
-2. **Send-state authority** — `daily_reports.emailed_at` is the single source of truth for "was this report already delivered?" The guard `if (existing && existing.emailedAt != null) return false` in `autoSummarizeWeekly` / `autoSummarizeMonthly` (circle.ts) is what prevents the weekly/monthly baseline auto-generator from overwriting a row that has already gone out by email. `email_logs` is the append-only audit trail: every successful and failed send lands there with subject, recipient, provider, and error message.
+2. **Send-state authority** — `daily_reports.emailed_at` is the single source of truth for "was this report already delivered?" Throughout `autoSummarize` and `circleSave` (circle.ts), rows with `emailedAt != null` are explicitly protected from overwrite — even under v0.8.8's force-refresh-this-week-and-month rule. `email_logs` is the append-only audit trail: every successful and failed send lands there with subject, recipient, provider, and error message.
 
 3. **Cross-device merge pivot** — `sync push` (pre-send) uploads this machine's `daily_reports` rows to Cloudflare D1; `sync pull` downloads rows authored by other machines. The merge in the email renderer joins local rows with pulled rows by `(report_date, project_name)` and dedupes sessions by `(project_name, title_normalized)`. Without a local DB, there is no "this machine's view" to push, and no stable pivot to merge remote rows into.
 
@@ -876,7 +874,7 @@ Records the last processed timestamp per gather run. In practice deprecated beca
 | `value` | TEXT NOT NULL | String value (JSON-encoded when needed) |
 | `updated_at` | INTEGER NOT NULL | |
 
-Known keys: `schema_version`, `email_to`, `smtp_user`, `smtp_pass`, `smtp_host`, `smtp_port`, `resend_key`, `d1_api_token`, `d1_account_id`, `d1_database_id`, `cf_ai_token`, `provider`, `pipeline_mode` (`smart` | `full`), `scope` (`global` | `project`).
+Known keys: `schema_version`, `email_to`, `smtp_user`, `smtp_pass`, `smtp_host`, `smtp_port`, `resend_key`, `d1_api_token`, `d1_account_id`, `d1_database_id`, `cf_ai_token`, `provider`, `ai_provider` (`cloudflare` | `anthropic` | `claude-code` | `auto`), `scope` (`global` | `project`). *(The `pipeline_mode` key was deprecated in v0.8.8 and is no longer read; its `--pipeline-mode` flag now emits a deprecation warning.)*
 
 ##### `vacations`
 
@@ -966,6 +964,93 @@ node dist/cli.js     # Direct execution
 ---
 
 ## Changelog
+
+### v0.8.8 (2026-04-17) — Heuristic weekly/monthly baseline removed + atomic DB write + renderer fix
+
+#### Highlights
+
+- **Heuristic weekly/monthly baseline completely removed.** The text-concatenation path (`summarizeRangeInto`, `autoSummarizeWeekly`, `autoSummarizeMonthly`, `mergeSummariesByTitle`, and the daily-overview `topics.join(", ")` fallback) is deleted. Weekly/monthly reports are now generated **only** via the skill path `circle --save --type <weekly|monthly>`. CLI no longer invents summaries by concatenating outcomes/flows.
+- **Renderer bug fixed: weekly/monthly no longer show only Monday/1st-of-month content.** Previously, `renderDailyEmail` looked up `getGatherReportByDate(date)` even for weekly/monthly — but `date` is the Monday/first-of-month, so only that single day's gather got rendered, wiping out the aggregated content actually stored in the weekly/monthly row. Now `gatherReport` is consulted only when `reportType === "daily"`.
+- **Atomic DB write.** `SqlJsAdapter.save()` previously used `writeFile(dbPath, encrypted)` which truncates-then-writes; a crash mid-write left a 0-byte DB that failed decryption on next launch (we lost a whole working DB to this on 2026-04-17). Now writes to `dbPath.tmp.<pid>` and renames — atomic on the same filesystem.
+- **First-run backfill: 90d → 7d.** `determineRange` defaulted to 90 days when no checkpoint existed, which meant a fresh install / post-recovery launch ran Workers AI on a ~3-month history. The user's recovery session highlighted this waste — reduced to 7 days.
+- **`out*` fails loudly when the report row is missing or empty.** `outw`/`outm` used to silently "skip" when `renderDailyEmail` returned null. It now emits a precise error per type: `weekly report row for <date> not found. Run /sincenety in Claude Code to generate a high-quality summary first.` — making the skill contract explicit.
+- **Every run re-summarizes the current week + current month.** Per user direction, `runCircle` now adds this week (Monday–today) and this month (day 1–today) to the dates it force-summarizes, bypassing the freshness-skip logic (but still protecting `emailedAt != null` rows). `circle --json` similarly always includes these ranges, so the skill always has fresh daily data to build weekly/monthly summaries from.
+
+#### Removed symbols / config
+
+- `src/core/circle.ts`: `summarizeRangeInto`, `autoSummarizeWeekly`, `autoSummarizeMonthly`, `mergeSummariesByTitle`, `normalizeTitle` (unused after merge removal), `MergedSummary` (renamed to `SessionSummary`).
+- `src/core/out.ts`: `PIPELINE_MODES`, `PipelineMode`, `PIPELINE_MODE_CONFIG_KEY`, `isPipelineMode`, `resolvePipelineMode`. `OutOptions.mode` dropped.
+- `src/cli.ts`: `parseModeFlag`, `--mode` flag on `out`/`outd`/`outw`/`outm`, `--pipeline-mode` on `config` (now a deprecation warning that does nothing).
+- Config key `pipeline_mode` is no longer read anywhere; new installs will not have this key at all.
+
+#### out* error contract (v0.8.8+)
+
+When the weekly/monthly row is missing or `summaryJson` is empty, `runOut` now records an `error` entry (instead of `skipped`) and bumps `result.errors`. The entry message tells the user to run `/sincenety` to generate the summary first. cron detects this via the process exit code (already `1` when `result.errors > 0`). Daily remains on the old `skipped` path — a no-activity day is not an error.
+
+#### circle behavior change
+
+- `runCircle`: computes `forcedWeekMonth = (this week ∪ this month) ∩ (gather exists)` and passes it both to `allChanged` (so new dates get summarized) and to `autoSummarize`'s new `forceDates` parameter (so existing-but-fresh dates still get re-summarized — previously they'd be skipped by the stale-only check). `emailedAt != null` dates are still protected.
+- `circleJson`: same expansion — skill clients always see the current week/month as "dates to process", even if no gather changes happened.
+- Daily `overview` no longer falls back to `"<date> 작업: topic1, topic2, ..."` when Cloudflare `generateOverview` returns null. If the AI path fails, `overview` stays null — the renderer handles missing overview gracefully. Consistent with v0.8.6's "no heuristic summaries ever" rule.
+
+#### renderer fix
+
+`src/email/renderer.ts`:
+
+```diff
+- const gatherReport = await storage.getGatherReportByDate(date);
++ // weekly/monthly는 기간 rollup이므로 per-day gather를 쓰면 안 된다
++ // (date가 월요일/1일이어서 그 하루치 gather만 잡혀 세션이 과소 표시됨).
++ const gatherReport =
++   reportType === "daily"
++     ? await storage.getGatherReportByDate(date)
++     : null;
+```
+
+This was the direct cause of weekly reports showing `1 sessions, 4msg, 0Ktok` in the subject line on Friday despite the weekly row containing 8 merged project summaries — renderer was serving Monday's single-session gather instead.
+
+#### Atomic DB write
+
+`src/storage/sqljs-adapter.ts`:
+
+```diff
+  private async save(): Promise<void> {
+    if (!this.db) return;
+    const data = this.db.export();
+    const encrypted = encrypt(Buffer.from(data), this.encryptionKey);
+-   await writeFile(this.dbPath, encrypted, { mode: 0o600 });
++   // Atomic write: tmp → rename. writeFile() truncates-then-writes, so a
++   // mid-write crash leaves a 0-byte DB. rename() on same filesystem is atomic.
++   const tmpPath = `${this.dbPath}.tmp.${process.pid}`;
++   await writeFile(tmpPath, encrypted, { mode: 0o600 });
++   await rename(tmpPath, this.dbPath);
+  }
+```
+
+Regression trigger: during a weekly resend on 2026-04-17, the send-path `save()` got interrupted mid-write and left `~/.sincenety/sincenety.db` at 0 bytes. Every subsequent command printed "DB decryption failed". Config (including SMTP app password and D1 API token) had to be re-entered by hand, and 7 days of gather/daily data had to be re-collected and re-summarized. The atomic-write fix closes the hole.
+
+#### First-run backfill reduction
+
+`src/core/air.ts:determineRange` — when no checkpoint row exists, the default range is now 7 days (was 90). The old 90-day default made a cold start blow through a full quarter of Workers AI calls unnecessarily.
+
+#### SKILL.md
+
+- Rewrote the "pipeline mode" section to state that full/smart is gone and the heuristic baseline has been removed.
+- Added a section on `outw`/`outm` failure modes, including the exact error strings and remediation.
+- Noted that `circle --json` always includes the current week/month — skill can rely on this for weekly/monthly re-summarization.
+
+#### Files changed
+
+- `src/core/circle.ts` — delete heuristic baseline functions, remove daily overview fallback, add forceDates, expand circleJson range
+- `src/core/out.ts` — drop PipelineMode machinery, weekly/monthly empty-row error handling
+- `src/core/air.ts` — first-run backfill 90d → 7d
+- `src/cli.ts` — remove `--mode` / `--pipeline-mode` flags, drop parseModeFlag, version bump
+- `src/email/renderer.ts` — gather lookup gated on `reportType === "daily"`
+- `src/storage/sqljs-adapter.ts` — atomic write via tmp+rename
+- `src/skill/SKILL.md` — rewrote pipeline/weekly/monthly sections
+- `package.json` — 0.8.7 → 0.8.8
+
+---
 
 ### v0.8.7 (2026-04-16) — Fix: autoSummarize now re-summarizes when new sessions arrive mid-day
 
